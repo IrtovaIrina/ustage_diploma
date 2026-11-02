@@ -53,11 +53,11 @@
             <tr>
                 <th class="num-col">№</th>
                 <th>Наименование и технические характеристики оборудования</th>
-                <th style="width: 80px;">Поставщик</th>
+                <th style="width: 90px;">Поставщик</th>
                 <th style="width: 55px;" class="center">Кол-во</th>
-                <th style="width: 90px;" class="right">Цена за ед., ₽</th>
-                <th style="width: 85px;" class="right">В т.ч. НДС, ₽</th>
-                <th style="width: 100px;" class="right">Итого с НДС, ₽</th>
+                <th style="width: 95px;" class="right">Цена за ед., ₽</th>
+                <th style="width: 95px;" class="right">В т.ч. НДС ({{ line.vat_rate_pct|default:"22" }}%), ₽</th>
+                <th style="width: 105px;" class="right">Итого с НДС, ₽</th>
             </tr>
         </thead>
         <tbody>
@@ -71,7 +71,7 @@
                 <td>{{ line.display_vendor }}</td>
                 <td class="center">{{ line.quantity }}</td>
                 <td class="right">{{ line.client_unit_price_rub }}</td>
-                <td class="right">{{ line.vat_amount_rub }}</td>
+                <td class="right">{{ line.vat_amount_rub }} ({{ line.vat_rate_pct }}%)</td>
                 <td class="right"><b>{{ line.client_line_total_rub }}</b></td>
             </tr>
             {% endfor %}
@@ -79,14 +79,14 @@
     </table>
 
     <div class="totals-box">
-        <div>Сумма без НДС: <b>{{ estimate.total_client_price_rub|add:"-"|add:estimate.total_vat_rub|default:estimate.total_client_price_rub }} ₽</b></div>
+        <div>Сумма без НДС: <b>{{ estimate.total_without_vat_rub }} ₽</b></div>
         <div style="margin-top: 4px;">Сумма НДС (согласно ставке): <b>{{ estimate.total_vat_rub }} ₽</b></div>
-        <div style="margin-top: 6px; font-size: 17px; color: #0066CC;">ИТОГО К ОПЛАТЕ ПО КП: {{ estimate.total_client_price_rub }} ₽</div>
+        <div style="margin-top: 6px; font-size: 17px; color: #0066CC;">ИТОГО К ОПЛАТЕ ПО КП (С НДС): {{ estimate.total_client_price_rub }} ₽</div>
     </div>
 
     <div style="margin-top: 15px; font-size: 12.5px;">
         * Срок действия коммерческого предложения составляет 14 календарных дней.<br>
-        * Условия поставки: со склада в г. Санкт-Петербург. Монтаж и пусконаладочные работы выполняются по отдельному графику.
+        * Условия поставки: со склада в г. Санкт-Петербург.
     </div>
 
 {% elif doc_type == 'tz44' %}

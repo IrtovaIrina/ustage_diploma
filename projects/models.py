@@ -8,14 +8,8 @@ class KanbanColumn(models.Model):
     order = models.PositiveIntegerField(default=1, verbose_name="Порядок")
     title = models.CharField(max_length=120, verbose_name="Название раздела Канбана")
     color_hex = models.CharField(max_length=20, default="#0066CC", verbose_name="Цвет полосы")
-    is_logistics_stage = models.BooleanField(
-        default=False,
-        verbose_name="Отслеживание поставки"
-    )
-    is_completed_stage = models.BooleanField(
-        default=False,
-        verbose_name="Завершено"
-    )
+    is_logistics_stage = models.BooleanField(default=False, verbose_name="Отслеживание поставки")
+    is_completed_stage = models.BooleanField(default=False, verbose_name="Завершено")
 
     class Meta:
         ordering = ['order', 'id']
@@ -30,24 +24,14 @@ class Project(models.Model):
     title = models.CharField(max_length=255, verbose_name="Наименование проекта")
     client = models.CharField(max_length=255, verbose_name="Заказчик (Театр / ДК)")
     client_budget_rub = models.DecimalField(
-        max_digits=14,
-        decimal_places=2,
-        default=Decimal('0.00'),
+        max_digits=14, decimal_places=2, default=Decimal('0.00'),
         verbose_name="Бюджет, который готов потратить театр (₽)"
     )
     kanban_column = models.ForeignKey(
-        KanbanColumn,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='projects'
+        KanbanColumn, on_delete=models.SET_NULL, null=True, blank=True, related_name='projects'
     )
     manager = models.ForeignKey(
-        CustomUser,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='managed_projects'
+        CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='managed_projects'
     )
     theater_tz_text = models.TextField(blank=True, default="", verbose_name="Текст ТЗ от театра")
     stage_width = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal('14.00'))
@@ -82,26 +66,14 @@ class Project(models.Model):
 
 class KanbanTask(models.Model):
     project = models.ForeignKey(
-        Project,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='tasks'
+        Project, on_delete=models.SET_NULL, null=True, blank=True, related_name='tasks'
     )
     project_name_manual = models.CharField(max_length=255, blank=True, default="")
     kanban_column = models.ForeignKey(
-        KanbanColumn,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='tasks'
+        KanbanColumn, on_delete=models.SET_NULL, null=True, blank=True, related_name='tasks'
     )
     assigned_to = models.ForeignKey(
-        CustomUser,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='assigned_tasks'
+        CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='assigned_tasks'
     )
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True, default="")
@@ -135,37 +107,26 @@ class Estimate(models.Model):
     project = models.OneToOneField(Project, on_delete=models.CASCADE, related_name='estimate')
     version = models.PositiveIntegerField(default=1)
     ceo_force_unblock_kp = models.BooleanField(
-        default=False,
-        verbose_name="Разблокировано решением Гендиректора"
+        default=False, verbose_name="Разблокировано решением Гендиректора"
     )
-    # Реальные параметры коммерческого расчета менеджера ООО «Юстейдж»
     fx_buffer_pct = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
-        default=Decimal('4.00'),
+        max_digits=5, decimal_places=2, default=Decimal('4.00'),
         verbose_name="Валютный буфер к курсу ЦБ РФ (%)"
     )
     platform_fee_pct = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
-        default=Decimal('1.50'),
+        max_digits=5, decimal_places=2, default=Decimal('1.50'),
         verbose_name="Комиссия площадки / ЭТП (%)"
     )
     delivery_cost_rub = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=Decimal('35000.00'),
+        max_digits=12, decimal_places=2, default=Decimal('35000.00'),
         verbose_name="Доставка и доп. расходы на логистику (₽)"
     )
     installation_cost_rub = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=Decimal('0.00'),
+        max_digits=12, decimal_places=2, default=Decimal('0.00'),
         verbose_name="Стоимость монтажа и ПНР (₽)"
     )
     embed_hidden_costs = models.BooleanField(
-        default=True,
-        verbose_name="Вшить доставку и монтаж в цену позиций КП"
+        default=True, verbose_name="Вшить доставку и монтаж в цену позиций КП"
     )
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -178,7 +139,6 @@ class Estimate(models.Model):
 
     @property
     def hidden_extra_rub_total(self):
-        """Сумма доставки и монтажа, которая вшивается внутрь позиций КП"""
         extra = self.delivery_cost_rub or Decimal('0.00')
         if self.embed_hidden_costs:
             extra += (self.installation_cost_rub or Decimal('0.00'))
@@ -186,7 +146,6 @@ class Estimate(models.Model):
 
     @property
     def total_planned_cost_rub(self):
-        """Полная себестоимость проекта (оборудование + доставка + монтаж + комиссия площадки)"""
         equip_cost = self.base_lines_cost_rub
         total_cost = equip_cost + (self.delivery_cost_rub or Decimal('0.00')) + (self.installation_cost_rub or Decimal('0.00'))
         fee_mult = Decimal('1.00') + ((self.platform_fee_pct or Decimal('0.00')) / Decimal('100.00'))
@@ -207,9 +166,14 @@ class Estimate(models.Model):
         for line in self.lines.all():
             total += line.vat_amount_rub
         if not self.embed_hidden_costs and (self.installation_cost_rub or Decimal('0.00')) > Decimal('0.00'):
-            # НДС 20% в т.ч. со строки монтажа
-            total += (self.installation_cost_rub * Decimal('20.00') / Decimal('120.00'))
+            total += (self.installation_cost_rub * Decimal('22.00') / Decimal('122.00'))
         return total.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+    @property
+    def total_without_vat_rub(self):
+        return (self.total_client_price_rub - self.total_vat_rub).quantize(
+            Decimal('0.01'), rounding=ROUND_HALF_UP
+        )
 
     @property
     def gross_margin_rub(self):
@@ -257,7 +221,6 @@ class Estimate(models.Model):
 class EstimateLine(models.Model):
     estimate = models.ForeignKey(Estimate, on_delete=models.CASCADE, related_name='lines')
     item = models.ForeignKey(Item, on_delete=models.SET_NULL, null=True, blank=True)
-    # Поля для ручного добавления нестандартного оборудования напрямую в КП
     is_manual_item = models.BooleanField(default=False, verbose_name="Добавлено вручную")
     manual_name = models.CharField(max_length=255, blank=True, default="", verbose_name="Наименование (ручной ввод)")
     manual_specs = models.TextField(blank=True, default="", verbose_name="ТТХ позиции (ручной ввод)")
@@ -271,7 +234,7 @@ class EstimateLine(models.Model):
     is_protected = models.BooleanField(default=True)
     markup_pct = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal('25.00'))
     vat_rate_pct = models.DecimalField(
-        max_digits=5, decimal_places=2, default=Decimal('20.00'), verbose_name="Ставка НДС (%)"
+        max_digits=5, decimal_places=2, default=Decimal('22.00'), verbose_name="Ставка НДС (%)"
     )
     is_auto_rigged = models.BooleanField(default=False)
 
@@ -295,7 +258,6 @@ class EstimateLine(models.Model):
 
     @property
     def currency_rate_with_buffer(self):
-        """Официальный курс ЦБ РФ + валютный буфер поставщика (+3-5%)"""
         fx_buf = Decimal('1.00') + ((self.estimate.fx_buffer_pct or Decimal('0.00')) / Decimal('100.00'))
         if self.item and not self.is_manual_item and self.item.vendor and self.item.vendor.currency:
             code = self.item.vendor.currency.code
@@ -327,16 +289,11 @@ class EstimateLine(models.Model):
 
     @property
     def client_line_total_rub(self):
-        """
-        Отпускная стоимость позиции для КП:
-        включает наценку менеджера, комиссию площадки (%) и пропорционально вшитую долю доставки и монтажа.
-        """
         base_cost = self.planned_line_cost_rub
         fee_mult = Decimal('1.00') + ((self.estimate.platform_fee_pct or Decimal('0.00')) / Decimal('100.00'))
         markup_mult = Decimal('1.00') + ((self.markup_pct or Decimal('0.00')) / Decimal('100.00'))
         direct_client_sum = base_cost * fee_mult * markup_mult
 
-        # Распределение вшитых расходов (доставка + монтаж) пропорционально весу строки в смете
         total_equip_cost = Decimal('0.00')
         for l in self.estimate.lines.all():
             total_equip_cost += l.planned_line_cost_rub
@@ -356,7 +313,6 @@ class EstimateLine(models.Model):
 
     @property
     def vat_amount_rub(self):
-        """Сумма НДС (в том числе) по строке оборудования"""
         vat = self.vat_rate_pct or Decimal('0.00')
         if vat <= Decimal('0.00'):
             return Decimal('0.00')
