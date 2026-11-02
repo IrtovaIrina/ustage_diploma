@@ -1,0 +1,111 @@
+{% extends 'base.html' %}
+{% block content %}
+
+<div class="box" style="border-left: 4px solid var(--ustage-blue); background:#FAFBFD;">
+    <h2>Автоматическое отслеживание грузов по трек-номеру ТК «Деловые Линии» и «СДЭК»</h2>
+    <p style="font-size:12px; color:var(--text-gray); margin:0 0 12px 0;">
+        Система интегрирована с API <b>ТК «Деловые Линии»</b> и курьерской службы <b>«СДЭК»</b>. Оборудование автоматически добавляется в таблицу при переносе проекта на Канбан-доске в раздел с флажком <b>«Отслеживание поставки»</b>, а также может быть добавлено и проверено по трек-номеру вручную.
+    </p>
+
+    <form method="post" style="background:#fff; padding:12px; border:1px solid var(--border-color); display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="track_new">
+        <label style="font-size:11px;">Служба доставки:<br>
+            <select name="carrier" style="font-weight:700;">
+                {% for c_code, c_name in carrier_choices %}
+                <option value="{{ c_code }}">{{ c_name }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label style="font-size:11px;">Трек-номер накладной:<br><input type="text" name="tracking_number" placeholder="26-009911-СПБ или CDEK-1094827" required style="width:185px;"></label>
+        <label style="font-size:11px;">Проект:<br>
+            <select name="project_id">{% for p in projects %}<option value="{{ p.id }}">{{ p.title }}</option>{% endfor %}</select>
+        </label>
+        <label style="font-size:11px;">Поставщик:<br>
+            <select name="vendor_id">{% for v in vendors %}<option value="{{ v.id }}">{{ v.name }}</option>{% endfor %}</select>
+        </label>
+        <label style="font-size:11px; flex:1; min-width:190px;">Оборудование в грузе:<br>
+            <input type="text" name="equipment_summary" placeholder="Линейный массив VIO L210, пульты, радиосистемы" required style="width:100%;">
+        </label>
+        <label style="font-size:11px;">Вес, кг:<br><input type="text" name="cargo_weight_kg" value="120.0" style="width:70px;"></label>
+        <button type="submit" class="btn btn-green">+ Добавить и пробить по API</button>
+    </form>
+</div>
+
+<div class="box">
+    <h2>Таблица активных поставок ТК «Деловые Линии» и «СДЭК»</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Перевозчик и Трек-номер</th>
+                <th>Проект и Поставщик</th>
+                <th>Оборудование в поставке</th>
+                <th>Маршрут и Вес</th>
+                <th>Статус доставки и Дата прибытия</th>
+                <th>Действия</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for s in shipments %}
+            <tr>
+                <form method="post">
+                    {% csrf_token %}
+                    <input type="hidden" name="shipment_id" value="{{ s.id }}">
+                    <td style="width:185px;">
+                        <select name="carrier" style="width:100%; margin-bottom:4px; font-weight:700; font-size:11.5px;">
+                            {% for c_code, c_name in carrier_choices %}
+                            <option value="{{ c_code }}" {% if s.carrier == c_code %}selected{% endif %}>{{ c_name }}</option>
+                            {% endfor %}
+                        </select>
+                        <input type="text" name="tracking_number" value="{{ s.tracking_number }}" style="width:100%; font-weight:700;"><br>
+                        {% if s.is_auto_created %}
+                            <span class="status-pill status-green" style="font-size:9.5px; margin-top:4px;">⚡ Авто из Канбана</span>
+                        {% else %}
+                            <span class="status-pill status-yellow" style="font-size:9.5px; margin-top:4px;">✍️ Ручной ввод</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <select name="project_id" style="width:100%; margin-bottom:4px; font-size:11.5px;">
+                            {% for p in projects %}<option value="{{ p.id }}" {% if s.project_id == p.id %}selected{% endif %}>{{ p.title }}</option>{% endfor %}
+                        </select>
+                        <select name="vendor_id" style="width:100%; font-size:11.5px;">
+                            {% for v in vendors %}<option value="{{ v.id }}" {% if s.vendor_id == v.id %}selected{% endif %}>{{ v.name }}</option>{% endfor %}
+                        </select>
+                    </td>
+                    <td>
+                        <input type="text" name="equipment_summary" value="{{ s.equipment_summary }}" style="width:100%; margin-bottom:4px;">
+                        <div style="font-size:10.5px; color:var(--text-gray);">{{ s.last_api_response }}</div>
+                    </td>
+                    <td>
+                        <input type="text" name="route_info" value="{{ s.route_info }}" style="width:100%; margin-bottom:4px;"><br>
+                        Вес: <input type="text" name="cargo_weight_kg" value="{{ s.cargo_weight_kg }}" style="width:70px;"> кг
+                    </td>
+                    <td>
+                        <select name="status" style="width:100%; margin-bottom:4px; font-size:11.5px;">
+                            {% for st_code, st_label in status_choices %}
+                            <option value="{{ st_code }}" {% if s.status == st_code %}selected{% endif %}>{{ st_label }}</option>
+                            {% endfor %}
+                        </select>
+                        Дата: <input type="date" name="eta_date" value="{{ s.eta_date|date:'Y-m-d' }}">
+                    </td>
+                    <td style="width:190px;">
+                        <button type="submit" name="action" value="update_shipment" class="btn btn-light" style="padding:4px 7px; margin-bottom:4px; width:100%;">💾 Сохранить изменения</button>
+                        <div style="display:flex; gap:4px;">
+                            <button type="submit" name="action" value="refresh_track" class="btn" style="flex:1; padding:4px 6px; font-size:10px;">🔄 Пробить API</button>
+                            <button type="submit" name="action" value="delete_shipment" class="btn btn-red" style="padding:4px 8px; font-size:10px;">✕</button>
+                        </div>
+                    </td>
+                </form>
+            </tr>
+            {% empty %}
+            <tr>
+                <td colspan="6" style="text-align:center; color:var(--text-gray); padding:18px;">
+                    Нет активных отгрузок. Переведите проект на Канбан-доске в раздел с флажком <b>«Отслеживание поставки»</b> или добавьте накладную Деловых Линий / СДЭК вручную выше.
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{% endblock %}

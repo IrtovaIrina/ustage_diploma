@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>USTAGE GROUP — Корпоративная ИС полного цикла</title>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@500;600;700&family=Open+Sans:wght@400;600&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <style>
+        :root {
+            --ustage-dark: #1A1D24;
+            --ustage-blue: #0066CC;
+            --ustage-blue-hover: #0052A3;
+            --bg-page: #F4F6F9;
+            --bg-white: #FFFFFF;
+            --border-color: #DDE2EC;
+            --text-dark: #22252A;
+            --text-gray: #6C757D;
+            --green: #28A745;
+            --yellow: #E09F00;
+            --red: #DC3545;
+        }
+        * { box-sizing: border-box; }
+        body { margin: 0; padding: 0; background: var(--bg-page); color: var(--text-dark); font-family: 'Open Sans', Arial, sans-serif; font-size: 13px; }
+        h1, h2, h3, .nav-logo, .btn, th, .menu-bar a { font-family: 'Montserrat', sans-serif; }
+        .top-contacts { background: #111318; color: #A0AAB8; font-size: 11.5px; padding: 6px 28px; display: flex; justify-content: space-between; align-items: center; }
+        .top-contacts b { color: #fff; }
+        .header { background: var(--ustage-dark); color: #fff; padding: 12px 28px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+        .nav-logo { font-size: 20px; font-weight: 700; color: #fff; text-decoration: none; text-transform: uppercase; }
+        .nav-logo span { color: var(--ustage-blue); }
+        .menu-bar { background: #fff; border-bottom: 2px solid var(--border-color); padding: 0 28px; display: flex; gap: 4px; overflow-x: auto; }
+        .menu-bar a {
+            padding: 12px 14px;
+            text-decoration: none;
+            color: var(--text-dark);
+            font-size: 11.5px;
+            font-weight: 600;
+            text-transform: uppercase;
+            border-bottom: 3px solid transparent;
+            white-space: nowrap;
+        }
+        .menu-bar a.active, .menu-bar a:hover { color: var(--ustage-blue); border-bottom-color: var(--ustage-blue); background: #F8FAFC; }
+        .container { max-width: 1460px; margin: 18px auto; padding: 0 20px; }
+        .box { background: #fff; border: 1px solid var(--border-color); border-radius: 3px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.03); }
+        h2 { font-size: 14px; text-transform: uppercase; margin: 0 0 12px 0; padding-bottom: 8px; border-bottom: 2px solid #EEF1F6; color: var(--ustage-dark); }
+
+        /* Стили для открывающихся и закрывающихся разделов */
+        .collapsible-header {
+            cursor: pointer;
+            user-select: none;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin: 0;
+            padding: 4px 6px 8px 6px;
+            border-bottom: 2px solid #EEF1F6;
+            border-radius: 2px;
+            transition: background-color 0.15s ease, color 0.15s ease;
+        }
+        .collapsible-header:hover {
+            background-color: #F4F8FD;
+            color: var(--ustage-blue);
+        }
+        .collapsible-header.is-closed {
+            border-bottom-color: transparent;
+            padding-bottom: 4px;
+        }
+        .collapse-icon {
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--ustage-blue);
+            background: #E8F1FA;
+            padding: 3px 9px;
+            border-radius: 2px;
+            transition: transform 0.2s ease;
+        }
+        .collapsible-body {
+            padding-top: 12px;
+        }
+        .collapsible-body.is-closed {
+            display: none;
+        }
+
+        table { width: 100%; border-collapse: collapse; background: #fff; }
+        th, td { border: 1px solid var(--border-color); padding: 8px 10px; text-align: left; vertical-align: middle; }
+        th { background: #F8F9FB; font-size: 10.5px; font-weight: 700; text-transform: uppercase; color: var(--ustage-dark); position: sticky; top: 0; z-index: 2; }
+        tbody tr:hover { background-color: #F4F8FD; }
+        input[type="text"], input[type="number"], input[type="password"], input[type="date"], select, textarea { border: 1px solid #C5CEDB; padding: 6px 8px; border-radius: 2px; font-size: 12.5px; background: #fff; font-family: inherit; }
+        .btn { background: var(--ustage-blue); color: #fff; border: none; padding: 7px 13px; border-radius: 2px; font-size: 11px; font-weight: 600; text-transform: uppercase; cursor: pointer; text-decoration: none; display: inline-block; }
+        .btn:hover { background: var(--ustage-blue-hover); }
+        .btn-light { background: #EEF2F7; color: var(--ustage-dark); border: 1px solid #C5CEDB; }
+        .btn-green { background: var(--green); }
+        .btn-red { background: var(--red); }
+        .status-pill { padding: 3px 8px; border-radius: 2px; font-size: 11px; font-weight: 600; display: inline-block; }
+        .status-green { background: #E6F4EA; color: #1E7E34; border: 1px solid #B7E1CD; }
+        .status-yellow { background: #FFF8E6; color: #B7791F; border: 1px solid #F6E05E; }
+        .status-red { background: #FDE8E8; color: #C53030; border: 1px solid #FEB2B2; }
+        .kanban-board { display: grid; gap: 12px; align-items: start; }
+        .kanban-col { background: #EBEEF5; border: 1px solid #D5DCE8; border-radius: 3px; padding: 10px; min-height: 360px; }
+        .kanban-col-title { font-family: 'Montserrat', sans-serif; font-size: 11.5px; font-weight: 700; text-transform: uppercase; padding-bottom: 8px; margin-bottom: 10px; border-bottom: 2px solid var(--ustage-blue); display: flex; justify-content: space-between; align-items: center; }
+        .kanban-card { background: #fff; border: 1px solid #CFD8E6; border-left: 4px solid var(--ustage-blue); border-radius: 3px; padding: 10px; margin-bottom: 10px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); transition: transform 0.15s ease; }
+        .kanban-card:hover { transform: translateY(-2px); }
+        .progress-bar { width: 100%; height: 14px; background: #E2E8F0; border-radius: 2px; overflow: hidden; margin-top: 4px; }
+        .progress-fill { height: 100%; transition: width 0.3s; }
+        .alert { padding: 10px 14px; background: #E6F4EA; border-left: 4px solid var(--green); margin-bottom: 14px; font-weight: 600; }
+    </style>
+</head>
+<body hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+
+    <div class="top-contacts">
+        <div>ООО «ЮСТЕЙДЖ» | Санкт-Петербург, ул. Харченко, 18 | <b>+7 (812) 409-49-91</b> | ustage-group.ru</div>
+        <div>Таб. №{{ active_user.tab_number }} | Корпоративная почта: <b>{{ active_user.email }}</b></div>
+    </div>
+
+    <div class="header">
+        <a href="{% url 'dashboard' %}" class="nav-logo">USTAGE <span>GROUP</span></a>
+
+        <div style="display:flex; gap:14px; align-items:center;">
+            <span style="font-size:12.5px; color:#DDE2EC;">
+                Сотрудник: <b>{{ active_user.first_name }}</b> — {{ active_user.position_title }}
+            </span>
+            <a href="{% url 'staff_management' %}" class="btn btn-light" style="padding:6px 10px;">Мой профиль</a>
+            <a href="{% url 'logout' %}" class="btn btn-red" style="padding:6px 12px;">Выйти из аккаунта →</a>
+        </div>
+    </div>
+
+    <div class="menu-bar">
+        <a href="{% url 'dashboard' %}" class="{% if active_tab == 'kanban' %}active{% endif %}">1. Канбан-доска</a>
+        <a href="{% url 'catalog_vendors' %}" class="{% if active_tab == 'catalog' %}active{% endif %}">2. Каталог ustage-group.ru и Прайсы</a>
+        <a href="{% url 'logistics_dellin' %}" class="{% if active_tab == 'logistics' %}active{% endif %}">3. Логистика </a>
+        <a href="{% url 'digital_twin' %}" class="{% if active_tab == 'twin' %}active{% endif %}">4. Цифровой паспорт объекта</a>
+        <a href="{% url 'staff_management' %}" class="{% if active_tab == 'staff' %}active{% endif %}">
+            {% if can_admin_roles %}5. Сотрудники, Роли и Профиль{% else %}5. Мой личный профиль{% endif %}
+        </a>
+    </div>
+
+    <div class="container">
+        {% if messages %}
+            {% for m in messages %}
+                <div class="alert">{{ m }}</div>
+            {% endfor %}
+        {% endif %}
+        {% block content %}{% endblock %}
+    </div>
+
+    <script>
+        function toggleBox(boxId) {
+            const body = document.getElementById(boxId);
+            const header = document.querySelector('[data-target="' + boxId + '"]');
+            const icon = document.getElementById('icon-' + boxId);
+            if (!body) return;
+
+            const isClosed = body.classList.toggle('is-closed');
+            if (header) header.classList.toggle('is-closed', isClosed);
+            if (icon) icon.innerHTML = isClosed ? '▼ Развернуть' : '▲ Свернуть';
+
+            try {
+                localStorage.setItem('ustage_collapse_' + boxId, isClosed ? 'closed' : 'open');
+            } catch (e) {}
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            document.querySelectorAll('.collapsible-body').forEach(function(body) {
+                const boxId = body.id;
+                const header = document.querySelector('[data-target="' + boxId + '"]');
+                const icon = document.getElementById('icon-' + boxId);
+                try {
+                    const savedState = localStorage.getItem('ustage_collapse_' + boxId);
+                    if (savedState === 'closed') {
+                        body.classList.add('is-closed');
+                        if (header) header.classList.add('is-closed');
+                        if (icon) icon.innerHTML = '▼ Развернуть';
+                    } else if (savedState === 'open') {
+                        body.classList.remove('is-closed');
+                        if (header) header.classList.remove('is-closed');
+                        if (icon) icon.innerHTML = '▲ Свернуть';
+                    }
+                } catch (e) {}
+            });
+        });
+    </script>
+</body>
+</html>

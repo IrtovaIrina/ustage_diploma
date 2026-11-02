@@ -1,0 +1,156 @@
+{% extends 'base.html' %}
+{% block content %}
+
+<!-- ПУНКТЫ 5, 8, 10, 13: Справочник профилей театров (без DMX-RDM, без скобок в заголовке, редактирование и добавление только если в роли стоит галочка) -->
+{% if can_view_venue_profiles %}
+<div class="box" style="border-left: 4px solid var(--ustage-blue); background:#FAFBFD;">
+    <h2>1. Справочник профилей театров</h2>
+    <p style="font-size:12px; color:var(--text-gray); margin:0 0 10px 0;">
+        Наработка установленного сценического оборудования рассчитывается автоматически: количество дней с даты ввода прибора в эксплуатацию умножается на суточный норматив часов работы выбранного профиля театра.
+    </p>
+
+    <div style="display:grid; grid-template-columns: {% if can_edit_venue_profiles %}1fr 1.5fr{% else %}1fr{% endif %}; gap:16px; align-items:start;">
+        {% if can_edit_venue_profiles %}
+        <form method="post" style="background:#fff; padding:12px; border:1px solid var(--border-color);">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="add_profile">
+            <div style="font-weight:700; margin-bottom:8px;">+ Добавить новый профиль театра:</div>
+            <div style="margin-bottom:8px;">
+                <label style="font-size:11px;">Название профиля театра:</label>
+                <input type="text" name="name" placeholder="Напр.: Кукольный театр / ТЮЗ" required style="width:100%; margin-top:2px;">
+            </div>
+            <div style="margin-bottom:10px;">
+                <label style="font-size:11px;">Норматив работы, часов в сутки:
+                    <input type="text" name="daily_hours" value="3.5" style="width:80px;">
+                </label>
+            </div>
+            <button type="submit" class="btn btn-green" style="width:100%;">+ Добавить профиль театра</button>
+        </form>
+        {% endif %}
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Профиль театра / учреждения</th>
+                    <th>Суточный норматив наработки</th>
+                    {% if can_edit_venue_profiles %}<th>Действия</th>{% endif %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for prof in profiles %}
+                <tr>
+                    {% if can_edit_venue_profiles %}
+                    <form method="post">
+                        {% csrf_token %}
+                        <input type="hidden" name="profile_id" value="{{ prof.id }}">
+                        <td><input type="text" name="name" value="{{ prof.name }}" style="width:100%;"></td>
+                        <td><input type="text" name="daily_hours" value="{{ prof.daily_hours }}" style="width:75px;"> ч/сутки</td>
+                        <td style="width:150px;">
+                            <button type="submit" name="action" value="update_profile" class="btn btn-light" style="padding:4px 8px;">💾 Обновить</button>
+                            <button type="submit" name="action" value="delete_profile" class="btn btn-red" style="padding:4px 8px;">✕</button>
+                        </td>
+                    </form>
+                    {% else %}
+                    <td><b>{{ prof.name }}</b></td>
+                    <td>{{ prof.daily_hours }} ч/сутки</td>
+                    {% endif %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<!-- Цифровой паспорт объекта без скобок в заголовке и без DMX-счетчика -->
+<div class="box">
+    <h2>2. Цифровой паспорт объекта — Учет оборудования по серийным номерам и ресурса</h2>
+
+    <form method="post" style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; background:#F0F5FA; padding:12px; border:1px solid #B8D4F2; margin-bottom:14px;">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="add_asset">
+        <label style="font-size:11px;">Серийный номер:<br><input type="text" name="serial_number" placeholder="SN-UST-2026-01" required style="width:140px;"></label>
+        <label style="font-size:11px; flex:1; min-width:190px;">Объект / Театр:<br>
+            <input type="text" name="venue_name" list="venues_datalist" placeholder="Впишите театр или выберите из списка..." required style="width:100%;">
+            <datalist id="venues_datalist">
+                {% for p in projects %}<option value="{{ p.title }}">{% endfor %}
+            </datalist>
+        </label>
+        <label style="font-size:11px;">Точка подвеса:<br><input type="text" name="zone_installed" value="Софит №1 / Портал" style="width:145px;"></label>
+        <label style="font-size:11px;">Оборудование:<br>
+            <select name="item_id" style="width:220px;">{% for it in items %}<option value="{{ it.id }}">{{ it.brand }} {{ it.name }}</option>{% endfor %}</select>
+        </label>
+        <label style="font-size:11px;">Профиль театра:<br>
+            <select name="venue_profile_id" style="width:200px;">{% for prof in profiles %}<option value="{{ prof.id }}">{{ prof.name }} ({{ prof.daily_hours }} ч/сут)</option>{% endfor %}</select>
+        </label>
+        <label style="font-size:11px;">Паспортный ресурс, ч:<br><input type="number" name="max_resource_hours" value="2000" style="width:90px;"></label>
+        <button type="submit" class="btn btn-green">+ Добавить в паспорт</button>
+    </form>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Серийный номер</th>
+                <th>Объект и Точка подвеса</th>
+                <th>Оборудование</th>
+                <th>Наработка / Паспортный ресурс</th>
+                <th>Статус износа</th>
+                <th>Профиль театра и Управление</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for asset in assets %}
+            <tr>
+                <form method="post">
+                    {% csrf_token %}
+                    <input type="hidden" name="asset_id" value="{{ asset.id }}">
+                    <td>
+                        <input type="text" name="serial_number" value="{{ asset.serial_number }}" style="width:140px; font-weight:700;"><br>
+                        <span style="font-size:10.5px; color:var(--text-gray);">Монтаж: {{ asset.installed_date }}</span>
+                        {% if asset.is_auto_created %}
+                            <br><span class="status-pill status-green" style="font-size:9.5px;">⚡ Авто из Завершено</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <input type="text" name="venue_name" value="{{ asset.venue_name|default:asset.project.title }}" list="venues_datalist" style="width:100%; font-weight:600; margin-bottom:4px;"><br>
+                        <input type="text" name="zone_installed" value="{{ asset.zone_installed }}" style="width:100%; font-size:11.5px;">
+                    </td>
+                    <td>
+                        <select name="item_id" style="width:100%; font-size:11.5px;">
+                            {% for it in items %}
+                            <option value="{{ it.id }}" {% if asset.item_id == it.id %}selected{% endif %}>{{ it.brand }} {{ it.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </td>
+                    <td>
+                        <b>{{ asset.operating_hours }} ч.</b> из <b>{{ asset.max_resource_hours }} ч.</b>
+                        <div class="progress-bar">
+                            <div class="progress-fill" style="width:{{ asset.wear_percentage }}%; background:{% if asset.wear_percentage >= 80 %}var(--red){% elif asset.wear_percentage >= 55 %}var(--yellow){% else %}var(--green){% endif %};"></div>
+                        </div>
+                    </td>
+                    <td>
+                        <span class="status-pill status-{{ asset.predictive_status.color }}">
+                            {{ asset.predictive_status.label }}
+                        </span>
+                    </td>
+                    <td style="width:340px;">
+                        <select name="venue_profile_id" style="font-size:11.5px; width:100%; margin-bottom:4px;">
+                            {% for prof in profiles %}
+                            <option value="{{ prof.id }}" {% if asset.venue_profile_id == prof.id %}selected{% endif %}>{{ prof.name }} — {{ prof.daily_hours }} ч/сутки</option>
+                            {% endfor %}
+                        </select>
+                        <div style="display:flex; gap:5px; align-items:center;">
+                            <span style="font-size:11px;">Ресурс, ч:</span>
+                            <input type="number" name="max_resource_hours" value="{{ asset.max_resource_hours }}" style="width:75px;">
+                            <button type="submit" name="action" value="update_asset" class="btn btn-light" style="padding:4px 8px;">💾 Обновить</button>
+                            <button type="submit" name="action" value="delete_asset" class="btn btn-red" style="padding:4px 8px;">✕</button>
+                        </div>
+                    </td>
+                </form>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{% endblock %}

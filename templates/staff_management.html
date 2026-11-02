@@ -1,0 +1,191 @@
+{% extends 'base.html' %}
+{% block content %}
+
+<div class="box" style="border-top: 3px solid var(--ustage-blue);">
+    <h2>Мой личный профиль сотрудника ООО «Юстейдж»</h2>
+    <form method="post" style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="update_own_profile">
+        <label style="font-size:11.5px;">Табельный №:<br><input type="text" value="{{ active_user.tab_number }}" readonly style="width:80px; background:#EEF2F7;"></label>
+        <label style="font-size:11.5px;">Логин:<br><input type="text" value="{{ active_user.username }}" readonly style="width:130px; background:#EEF2F7;"></label>
+        <label style="font-size:11.5px;">Должность:<br><input type="text" value="{{ active_user.position_title }}" readonly style="width:230px; background:#EEF2F7;"></label>
+        <label style="font-size:11.5px; flex:1; min-width:200px;">ФИО сотрудника:<br><input type="text" value="{{ active_user.first_name }}" readonly style="width:100%; background:#EEF2F7;" title="Изменяется только руководителем"></label>
+        <label style="font-size:11.5px;">Корпоративный Email:<br><input type="text" value="{{ active_user.email }}" readonly style="width:190px; background:#EEF2F7;" title="Изменяется только руководителем"></label>
+        <label style="font-size:11.5px;">Новый пароль:<br><input type="password" name="new_password" placeholder="Введите новый пароль..." required style="width:170px;"></label>
+        <button type="submit" class="btn btn-green">💾 Сменить пароль</button>
+    </form>
+</div>
+
+{% if can_admin_roles %}
+
+<!-- 8. Открывающийся/закрывающийся блок: Штатный состав сотрудников ООО «Юстейдж» -->
+<div class="box">
+    <h2 class="collapsible-header" data-target="box-staff-list" onclick="toggleBox('box-staff-list')">
+        <span>Штатный состав сотрудников ООО «Юстейдж»</span>
+        <span class="collapse-icon" id="icon-box-staff-list">▲ Свернуть</span>
+    </h2>
+
+    <div id="box-staff-list" class="collapsible-body">
+        <form method="post" style="background:#F0F5FA; padding:12px; border:1px solid #B8D4F2; margin-bottom:14px; display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="add_employee">
+            <label style="font-size:11px;">Таб. №:<br><input type="text" name="tab_number" value="00028" style="width:58px;" required></label>
+            <label style="font-size:11px;">Логин:<br><input type="text" name="username" placeholder="petrov_op" style="width:100px;" required></label>
+            <label style="font-size:11px;">Пароль:<br><input type="text" name="password" value="admin12345" style="width:95px;" required></label>
+            <label style="font-size:11px; flex:1; min-width:170px;">ФИО сотрудника:<br><input type="text" name="first_name" placeholder="Петров Петр Сергеевич" style="width:100%;" required></label>
+            <label style="font-size:11px;">Email:<br><input type="text" name="email" placeholder="petrov@ustage-group.ru" style="width:155px;"></label>
+            <label style="font-size:11px;">Назначить роль:<br>
+                <select name="position_id">
+                    {% for pos in positions %}<option value="{{ pos.id }}">{{ pos.title }}</option>{% endfor %}
+                </select>
+            </label>
+            <button type="submit" class="btn btn-green">+ Добавить сотрудника</button>
+        </form>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Таб. №</th>
+                    <th>Логин</th>
+                    <th>ФИО сотрудника</th>
+                    <th>Email</th>
+                    <th>Роль / Должность</th>
+                    {% if is_ceo %}<th>Право управлять ролями</th>{% endif %}
+                    <th>Новый пароль</th>
+                    <th>Действия руководителя</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for emp in employees %}
+                <tr>
+                    <form method="post">
+                        {% csrf_token %}
+                        <input type="hidden" name="employee_id" value="{{ emp.id }}">
+                        <td><input type="text" name="tab_number" value="{{ emp.tab_number }}" style="width:52px;"></td>
+                        <td><b>{{ emp.username }}</b></td>
+                        <td><input type="text" name="first_name" value="{{ emp.first_name }}" style="width:100%;"></td>
+                        <td><input type="text" name="email" value="{{ emp.email }}" style="width:150px;"></td>
+                        <td>
+                            <select name="position_id" style="width:100%;">
+                                {% for pos in positions %}
+                                <option value="{{ pos.id }}" {% if emp.position_id == pos.id %}selected{% endif %}>{{ pos.title }}</option>
+                                {% endfor %}
+                            </select>
+                        </td>
+                        {% if is_ceo %}
+                        <td style="text-align:center;">
+                            <label style="font-size:11px; cursor:pointer;">
+                                <input type="checkbox" name="can_manage_roles" {% if emp.can_manage_roles %}checked{% endif %}>
+                                Управляет ролями
+                            </label>
+                        </td>
+                        {% endif %}
+                        <td><input type="text" name="new_password" placeholder="Новый пароль..." style="width:105px;"></td>
+                        <td style="width:145px;">
+                            <button type="submit" name="action" value="update_employee" class="btn btn-light" style="padding:4px 8px;">💾 Сохранить</button>
+                            <button type="submit" name="action" value="delete_employee" class="btn btn-red" style="padding:4px 8px;">✕</button>
+                        </td>
+                    </form>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- 9. Открывающийся/закрывающийся блок: Справочник ролей и должностей -->
+<div class="box">
+    <h2 class="collapsible-header" data-target="box-roles-matrix" onclick="toggleBox('box-roles-matrix')">
+        <span>Справочник ролей и должностей</span>
+        <span class="collapse-icon" id="icon-box-roles-matrix">▲ Свернуть</span>
+    </h2>
+
+    <div id="box-roles-matrix" class="collapsible-body">
+        <form method="post" style="background:#FAFBFD; padding:12px; border:1px solid var(--border-color); margin-bottom:14px;">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="add_position">
+            <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
+                <b>+ Новая роль:</b>
+                <input type="text" name="code" placeholder="Код роли" required style="width:120px;">
+                <input type="text" name="title" placeholder="Название должности" required style="width:240px;">
+                <label style="font-size:11.5px;"><input type="checkbox" name="is_management"> Руководитель</label>
+                <label style="font-size:11.5px;"><input type="checkbox" name="is_sales_manager" checked> Менеджер продаж</label>
+            </div>
+            <div style="display:flex; gap:12px; flex-wrap:wrap; font-size:11px; align-items:center;">
+                <label><input type="checkbox" name="view_currencies" checked> 👁 Валюты ЦБ</label>
+                <label><input type="checkbox" name="edit_currencies"> ✏️ Валюты ЦБ</label>
+                <label><input type="checkbox" name="view_vendors" checked> 👁 Поставщики</label>
+                <label><input type="checkbox" name="edit_vendors"> ✏️ Поставщики</label>
+                <label><input type="checkbox" name="view_venue_profiles" checked> 👁 Профили театров</label>
+                <label><input type="checkbox" name="edit_venue_profiles"> ✏️ Профили театров</label>
+                <input type="hidden" name="view_kanban" value="on"><input type="hidden" name="edit_kanban" value="on">
+                <input type="hidden" name="view_estimates" value="on"><input type="hidden" name="edit_estimates" value="on">
+                <input type="hidden" name="view_catalog" value="on"><input type="hidden" name="edit_catalog" value="on">
+                <input type="hidden" name="view_logistics" value="on"><input type="hidden" name="edit_logistics" value="on">
+                <input type="hidden" name="view_twin" value="on"><input type="hidden" name="edit_twin" value="on">
+                <button type="submit" class="btn">+ Создать роль</button>
+            </div>
+        </form>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Наименование роли / должности</th>
+                    <th>Статус</th>
+                    <th>Мультивалютный контур ООО «Юстейдж»</th>
+                    <th>Реестр поставщиков и производителей ООО «Юстейдж»</th>
+                    <th>Справочник профилей театров</th>
+                    <th>Базовые экраны системы</th>
+                    <th>Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for pos in positions %}
+                <tr>
+                    <form method="post">
+                        {% csrf_token %}
+                        <input type="hidden" name="position_id" value="{{ pos.id }}">
+                        <td><input type="text" name="title" value="{{ pos.title }}" style="width:100%; font-weight:600;"></td>
+                        <td style="font-size:11px;">
+                            <label><input type="checkbox" name="is_management" {% if pos.is_management %}checked{% endif %}> Рук.</label><br>
+                            <label><input type="checkbox" name="is_sales_manager" {% if pos.is_sales_manager %}checked{% endif %}> Прод.</label>
+                        </td>
+                        <td style="font-size:11px;">
+                            <label><input type="checkbox" name="view_currencies" {% if pos.view_currencies %}checked{% endif %}> Просмотр</label><br>
+                            <label><input type="checkbox" name="edit_currencies" {% if pos.edit_currencies %}checked{% endif %}> Ред. / Удал.</label>
+                        </td>
+                        <td style="font-size:11px;">
+                            <label><input type="checkbox" name="view_vendors" {% if pos.view_vendors %}checked{% endif %}> Просмотр</label><br>
+                            <label><input type="checkbox" name="edit_vendors" {% if pos.edit_vendors %}checked{% endif %}> Ред. / Удал.</label>
+                        </td>
+                        <td style="font-size:11px;">
+                            <label><input type="checkbox" name="view_venue_profiles" {% if pos.view_venue_profiles %}checked{% endif %}> Просмотр</label><br>
+                            <label><input type="checkbox" name="edit_venue_profiles" {% if pos.edit_venue_profiles %}checked{% endif %}> Ред. / Удал.</label>
+                        </td>
+                        <td style="font-size:10.5px;">
+                            <label><input type="checkbox" name="view_kanban" {% if pos.view_kanban %}checked{% endif %}> Канбан</label>
+                            <label><input type="checkbox" name="edit_kanban" {% if pos.edit_kanban %}checked{% endif %}> Ред.</label><br>
+                            <label><input type="checkbox" name="view_estimates" {% if pos.view_estimates %}checked{% endif %}> Сметы</label>
+                            <label><input type="checkbox" name="edit_estimates" {% if pos.edit_estimates %}checked{% endif %}> Ред.</label><br>
+                            <label><input type="checkbox" name="view_catalog" {% if pos.view_catalog %}checked{% endif %}> Каталог</label>
+                            <label><input type="checkbox" name="edit_catalog" {% if pos.edit_catalog %}checked{% endif %}> Ред.</label><br>
+                            <label><input type="checkbox" name="view_logistics" {% if pos.view_logistics %}checked{% endif %}> Логист.</label>
+                            <label><input type="checkbox" name="edit_logistics" {% if pos.edit_logistics %}checked{% endif %}> Ред.</label><br>
+                            <label><input type="checkbox" name="view_twin" {% if pos.view_twin %}checked{% endif %}> Паспорт</label>
+                            <label><input type="checkbox" name="edit_twin" {% if pos.edit_twin %}checked{% endif %}> Ред.</label>
+                        </td>
+                        <td style="width:115px;">
+                            <button type="submit" name="action" value="update_position" class="btn btn-light" style="padding:4px 7px;">💾</button>
+                            <button type="submit" name="action" value="delete_position" class="btn btn-red" style="padding:4px 7px;">✕</button>
+                        </td>
+                    </form>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+{% endif %}
+
+{% endblock %}

@@ -1,0 +1,305 @@
+{% extends 'base.html' %}
+{% block content %}
+
+<!-- 1. Открывающийся/закрывающийся блок: Мультивалютный контур ООО «Юстейдж» -->
+{% if can_view_currencies %}
+<div class="box" style="border-top: 3px solid var(--ustage-blue);">
+    <h2 class="collapsible-header" data-target="box-currencies" onclick="toggleBox('box-currencies')">
+        <span>1. Мультивалютный контур ООО «Юстейдж»</span>
+        <span class="collapse-icon" id="icon-box-currencies">▲ Свернуть</span>
+    </h2>
+
+    <div id="box-currencies" class="collapsible-body">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
+            <span style="font-size:12px; color:var(--text-gray);">
+                Официальный курс к рублю загружается из API ЦБ РФ (в сметах дополнительно учитывается валютный буфер поставщика +3–5%).
+            </span>
+            {% if can_edit_currencies %}
+            <form action="{% url 'sync_cbr_currencies' %}" method="post" style="margin:0;">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-green">🔄 Выгрузить актуальные курсы из API ЦБ РФ</button>
+            </form>
+            {% endif %}
+        </div>
+
+        <form action="{% url 'update_currency' %}" method="post" style="margin-bottom:14px;">
+            {% csrf_token %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Код валюты ЦБ РФ</th>
+                        <th>Наименование валюты</th>
+                        <th>Официальный курс ЦБ РФ к рублю</th>
+                        <th>Дата синхронизации с ЦБ РФ</th>
+                        {% if can_edit_currencies %}<th>Управление</th>{% endif %}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for curr in currencies %}
+                    <tr>
+                        <td><b>{{ curr.code }}</b></td>
+                        <td>{{ curr.name }}</td>
+                        <td><b style="color:var(--ustage-blue); font-size:13.5px;">{{ curr.rate }} ₽</b></td>
+                        <td style="font-size:11px; color:var(--text-gray);">{{ curr.updated_at|date:"d.m.Y H:i" }}</td>
+                        {% if can_edit_currencies %}
+                        <td style="width:150px;">
+                            {% if curr.code != 'RUB' %}
+                            <button type="submit" name="remove_currency_id" value="{{ curr.id }}" class="btn btn-red" style="padding:4px 8px; font-size:10px;">
+                                ✕ Удалить из таблицы
+                            </button>
+                            {% else %}
+                            <span style="font-size:11px; color:var(--text-gray);">Базовая валюта</span>
+                            {% endif %}
+                        </td>
+                        {% endif %}
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </form>
+
+        {% if can_edit_currencies %}
+        <form action="{% url 'add_currency' %}" method="post" style="background:#F8FAFC; padding:12px; border:1px solid var(--border-color);">
+            {% csrf_token %}
+            <div style="font-weight:700; margin-bottom:8px;">Выгрузить валюты на экран из справочника ЦБ РФ:</div>
+            <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
+                {% for c_db in all_currencies_db %}
+                    {% if not c_db.is_active %}
+                    <label style="background:#fff; border:1px solid #C5CEDB; padding:5px 10px; border-radius:2px; cursor:pointer; font-size:12px;">
+                        <input type="checkbox" name="activate_currency_ids" value="{{ c_db.id }}">
+                        <b>{{ c_db.code }}</b> — {{ c_db.name }} ({{ c_db.rate }} ₽)
+                    </label>
+                    {% endif %}
+                {% endfor %}
+            </div>
+            <button type="submit" class="btn">+ Добавить выбранные валюты ЦБ РФ в таблицу</button>
+        </form>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
+<!-- 2. Открывающийся/закрывающийся блок: Реестр поставщиков и производителей ООО «Юстейдж» -->
+{% if can_view_vendors %}
+<div class="box">
+    <h2 class="collapsible-header" data-target="box-vendors" onclick="toggleBox('box-vendors')">
+        <span>2. Реестр поставщиков и производителей ООО «Юстейдж»</span>
+        <span class="collapse-icon" id="icon-box-vendors">▲ Свернуть</span>
+    </h2>
+
+    <div id="box-vendors" class="collapsible-body">
+        {% if can_edit_vendors %}
+        <form action="{% url 'manage_vendors' %}" method="post" style="background:#F0F5FA; padding:12px; border:1px solid #B8D4F2; margin-bottom:14px; display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="add_vendor">
+            <label style="font-size:11px; flex:1; min-width:180px;">Наименование поставщика:<br><input type="text" name="name" placeholder="ShenZhen StageLight Co." required style="width:100%;"></label>
+            <label style="font-size:11px;">Страна:<br><input type="text" name="country" placeholder="Китай / РФ / ЕС" required style="width:130px;"></label>
+            <label style="font-size:11px;">Контакты:<br><input type="text" name="contact_info" placeholder="sales@vendor.com" required style="width:150px;"></label>
+            <label style="font-size:11px;">Валюта прайса:<br>
+                <select name="currency_id">
+                    {% for curr in all_currencies_db %}<option value="{{ curr.id }}">{{ curr.code }} — {{ curr.rate }} ₽</option>{% endfor %}
+                </select>
+            </label>
+            <label style="font-size:11px;">Базовая скидка %:<br><input type="text" name="base_discount" value="15.00" style="width:75px;"></label>
+            <label style="font-size:11px;">Защита проекта %:<br><input type="text" name="protected_discount" value="28.00" style="width:75px;"></label>
+            <button type="submit" class="btn btn-green">+ Добавить поставщика</button>
+        </form>
+        {% endif %}
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Поставщик / Производитель</th>
+                    <th>Страна логистики</th>
+                    <th>Контактные данные</th>
+                    <th>Валюта</th>
+                    <th>Базовая скидка %</th>
+                    <th>Скидка Защиты %</th>
+                    {% if can_edit_vendors %}<th>Действия</th>{% endif %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for v in vendors %}
+                <tr>
+                    {% if can_edit_vendors %}
+                    <form action="{% url 'manage_vendors' %}" method="post">
+                        {% csrf_token %}
+                        <input type="hidden" name="vendor_id" value="{{ v.id }}">
+                        <td><input type="text" name="name" value="{{ v.name }}" style="width:100%; font-weight:600;"></td>
+                        <td><input type="text" name="country" value="{{ v.country }}" style="width:100%;"></td>
+                        <td><input type="text" name="contact_info" value="{{ v.contact_info }}" style="width:100%;"></td>
+                        <td>
+                            <select name="currency_id" style="width:100%;">
+                                {% for curr in all_currencies_db %}
+                                <option value="{{ curr.id }}" {% if v.currency_id == curr.id %}selected{% endif %}>{{ curr.code }} — {{ curr.rate }} ₽</option>
+                                {% endfor %}
+                            </select>
+                        </td>
+                        <td><input type="text" name="base_discount" value="{{ v.base_discount }}" style="width:70px;"> %</td>
+                        <td><input type="text" name="protected_discount" value="{{ v.protected_discount }}" style="width:70px;"> %</td>
+                        <td style="width:155px;">
+                            <button type="submit" name="action" value="update_vendor" class="btn btn-light" style="padding:4px 8px;">💾 Обновить</button>
+                            <button type="submit" name="action" value="delete_vendor" class="btn btn-red" style="padding:4px 8px;">✕</button>
+                        </td>
+                    </form>
+                    {% else %}
+                    <td><b>{{ v.name }}</b></td>
+                    <td>{{ v.country }}</td>
+                    <td>{{ v.contact_info }}</td>
+                    <td><span class="status-pill status-green">{{ v.currency.code }} — {{ v.currency.rate }} ₽</span></td>
+                    <td>{{ v.base_discount }}%</td>
+                    <td><b>{{ v.protected_discount }}%</b></td>
+                    {% endif %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<!-- 3. Открывающийся/закрывающийся блок: Импорт прайс-листов поставщиков (с автоопределением для сводных прайсов) -->
+<div class="box">
+    <h2 class="collapsible-header" data-target="box-import-prices" onclick="toggleBox('box-import-prices')">
+        <span>3. Импорт прайс-листов поставщиков</span>
+        <span class="collapse-icon" id="icon-box-import-prices">▲ Свернуть</span>
+    </h2>
+
+    <div id="box-import-prices" class="collapsible-body">
+        <form action="{% url 'upload_price' %}" method="post" enctype="multipart/form-data" style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">
+            {% csrf_token %}
+            <label style="font-size:11.5px; font-weight:600;">1. Поставщик:<br>
+                <select name="vendor_id" style="margin-top:4px;">
+                    {% for v in vendors %}<option value="{{ v.id }}">{{ v.name }}</option>{% endfor %}
+                </select>
+            </label>
+
+            <label style="font-size:11.5px; font-weight:600;">2. Раздел каталога ustage-group.ru:<br>
+                <select name="category_id" id="import_category_select" onchange="filterImportSubcategories()" style="margin-top:4px;">
+                    <option value="">⚡ Определить автоматически (сводный прайс поставщика)</option>
+                    {% for c in categories %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}
+                </select>
+            </label>
+
+            <label style="font-size:11.5px; font-weight:600;">3. Подраздел выбранного раздела:<br>
+                <select name="subcategory_id" id="import_subcategory_select" style="margin-top:4px; min-width:320px;">
+                    <option value="" data-cat-id="">⚡ Автораспределение по названию и ТТХ приборов</option>
+                    {% for sc in all_subcategories %}
+                    <option value="{{ sc.id }}" data-cat-id="{{ sc.category_id }}">{{ sc.category.name }} → {{ sc.name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+
+            <label style="font-size:11.5px; font-weight:600;">4. Файл прайс-листа Excel:<br>
+                <input type="file" name="excel_file" accept=".xlsx,.xls" required style="margin-top:4px;">
+            </label>
+
+            <button type="submit" class="btn btn-green">📥 Загрузить прайс-лист в каталог</button>
+        </form>
+    </div>
+</div>
+
+<script>
+function filterImportSubcategories() {
+    var catSelect = document.getElementById('import_category_select');
+    var subSelect = document.getElementById('import_subcategory_select');
+    if (!catSelect || !subSelect) return;
+    var selectedCatId = catSelect.value;
+
+    if (!selectedCatId) {
+        for (var i = 0; i < subSelect.options.length; i++) {
+            subSelect.options[i].style.display = '';
+            subSelect.options[i].disabled = false;
+        }
+        subSelect.value = '';
+        return;
+    }
+
+    var firstVisibleValue = null;
+    for (var j = 0; j < subSelect.options.length; j++) {
+        var opt = subSelect.options[j];
+        var optCatId = opt.getAttribute('data-cat-id');
+        if (optCatId === selectedCatId) {
+            opt.style.display = '';
+            opt.disabled = false;
+            if (firstVisibleValue === null) firstVisibleValue = opt.value;
+        } else {
+            opt.style.display = 'none';
+            opt.disabled = true;
+        }
+    }
+    if (firstVisibleValue !== null) {
+        subSelect.value = firstVisibleValue;
+    }
+}
+document.addEventListener('DOMContentLoaded', filterImportSubcategories);
+</script>
+
+<!-- 4. Каталог оборудования ustage-group.ru -->
+<div class="box">
+    <h2>4. Каталог оборудования ustage-group.ru</h2>
+
+    <form method="get" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:14px; background:#F8FAFC; padding:10px; border:1px solid var(--border-color);">
+        <label style="font-size:12px; font-weight:600;">Раздел каталога:
+            <select name="cat_id" onchange="this.form.subcat_id.value=''; this.form.submit();">
+                <option value="">Все разделы</option>
+                {% for c in categories %}
+                <option value="{{ c.id }}" {% if selected_cat_id == c.id %}selected{% endif %}>{{ c.name }}</option>
+                {% endfor %}
+            </select>
+        </label>
+
+        <label style="font-size:12px; font-weight:600;">Подраздел:
+            <select name="subcat_id" onchange="this.form.submit()">
+                <option value="">Все подразделы выбранного раздела</option>
+                {% for sc in subcategories %}
+                <option value="{{ sc.id }}" {% if selected_subcat_id == sc.id %}selected{% endif %}>{{ sc.category.name }} → {{ sc.name }}</option>
+                {% endfor %}
+            </select>
+        </label>
+
+        <input type="text" name="q" value="{{ search_query }}" placeholder="Поиск по артикулу, бренду, характеристикам..." style="flex:1; min-width:220px;">
+        <button type="submit" class="btn">Найти</button>
+        <a href="{% url 'catalog_vendors' %}" class="btn btn-light">Сбросить</a>
+    </form>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Артикул</th>
+                <th>Раздел → Подраздел ustage-group.ru</th>
+                <th>Бренд и Наименование</th>
+                <th>Характеристики</th>
+                <th>Поставщик</th>
+                <th>Розница / Скидка / Закупка</th>
+                <th>Наличие у вендора</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for it in items %}
+            <tr>
+                <td><b>{{ it.sku }}</b></td>
+                <td style="font-size:11.5px;"><b>{{ it.category.name }}</b><br><span style="color:var(--text-gray);">→ {{ it.subcategory.name }}</span></td>
+                <td><b>{{ it.brand }}</b> {{ it.name }}</td>
+                <td style="font-size:11.5px;">{{ it.specs_text }}</td>
+                <td>{{ it.vendor.name }}</td>
+                <td>
+                    РРЦ: {{ it.retail_price }} {{ it.vendor.currency.code }} | Скидка {{ it.discount_pct }}%<br>
+                    <b>Закупка: {{ it.purchase_price }} {{ it.vendor.currency.code }}</b>
+                </td>
+                <td>
+                    {% if it.stock_status == 'in_stock' %}
+                        <span class="status-pill status-green">В наличии: {{ it.stock_qty }} шт.</span>
+                    {% elif it.stock_status == 'low_stock' %}
+                        <span class="status-pill status-yellow">Мало: {{ it.stock_qty }} шт.</span>
+                    {% else %}
+                        <span class="status-pill status-red">Нет у поставщика</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{% endblock %}

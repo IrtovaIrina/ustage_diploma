@@ -1,0 +1,141 @@
+{% extends 'base.html' %}
+{% block content %}
+
+<div style="margin-bottom:14px; display:flex; justify-content:space-between; align-items:center;">
+    <div>
+        <a href="{% url 'dashboard' %}" class="btn btn-light">← Вернуться на Канбан-доску</a>
+        <span style="font-family:'Montserrat',sans-serif; font-size:18px; font-weight:700; margin-left:12px;">
+            Карточка задачи #{{ task.id }}: {{ task.title }}
+        </span>
+    </div>
+    <span class="status-pill {% if task.is_completed %}status-green{% else %}status-yellow{% endif %}">
+        {% if task.is_completed %}✓ ЗАДАЧА ЗАВЕРШЕНА{% else %}В РАБОТЕ ({{ task.kanban_column.title }}){% endif %}
+    </span>
+</div>
+
+<div style="display:grid; grid-template-columns: 1.1fr 1fr; gap:18px; align-items:start;">
+
+    <!-- Левая колонка: Описание задачи и Прикрепленные файлы -->
+    <div>
+        <div class="box">
+            <h2>Параметры и подробное описание задачи</h2>
+            <form method="post">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="update_details">
+
+                <div style="margin-bottom:10px;">
+                    <label style="font-size:11.5px; font-weight:600;">Заголовок задачи:</label>
+                    <input type="text" name="title" value="{{ task.title }}" required style="width:100%; margin-top:4px;">
+                </div>
+
+                <div style="margin-bottom:10px;">
+                    <label style="font-size:11.5px; font-weight:600;">Проект (прописанный вручную):</label>
+                    <input type="text" name="project_name_manual" value="{{ task.project_name_manual|default:task.project.title }}" required style="width:100%; margin-top:4px;">
+                </div>
+
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px;">
+                    <div>
+                        <label style="font-size:11.5px; font-weight:600;">Раздел Канбан-доски:</label>
+                        <select name="column_id" style="width:100%; margin-top:4px;">
+                            {% for c in all_columns %}
+                            <option value="{{ c.id }}" {% if task.kanban_column_id == c.id %}selected{% endif %}>{{ c.title }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div>
+                        <label style="font-size:11.5px; font-weight:600;">Исполнитель:</label>
+                        <select name="assigned_to_id" style="width:100%; margin-top:4px;">
+                            {% for m in sales_managers %}
+                            <option value="{{ m.id }}" {% if task.assigned_to_id == m.id %}selected{% endif %}>{{ m.first_name }} ({{ m.position_title }})</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+
+                <div style="margin-bottom:12px;">
+                    <label style="font-size:11.5px; font-weight:600;">Подробное описание задачи / Чек-лист работ:</label>
+                    <textarea name="description" rows="5" placeholder="Введите подробное описание задачи, технические заметки, ссылки или список подзадач..." style="width:100%; margin-top:4px;">{{ task.description }}</textarea>
+                </div>
+
+                <button type="submit" class="btn">💾 Сохранить описание и параметры задачи</button>
+            </form>
+        </div>
+
+        <!-- Блок прикрепления и скачивания файлов -->
+        <div class="box">
+            <h2>Прикрепленные файлы и документы ({{ attachments|length }})</h2>
+            <form method="post" enctype="multipart/form-data" style="display:flex; gap:10px; align-items:center; background:#F0F5FA; padding:10px; border:1px solid #B8D4F2; margin-bottom:12px;">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="upload_file">
+                <input type="file" name="attachment" required style="flex:1;">
+                <button type="submit" class="btn btn-green">📎 Прикрепить файл</button>
+            </form>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Имя файла</th>
+                        <th>Загрузил сотрудник</th>
+                        <th>Дата</th>
+                        <th>Действие</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for att in attachments %}
+                    <tr>
+                        <td>
+                            <a href="{{ att.file.url }}" target="_blank" style="color:var(--ustage-blue); font-weight:700;">
+                                📄 {{ att.filename }}
+                            </a>
+                        </td>
+                        <td>{{ att.uploaded_by.first_name }}</td>
+                        <td>{{ att.uploaded_at|date:"d.m.Y H:i" }}</td>
+                        <td style="width:90px;">
+                            <form method="post">
+                                {% csrf_token %}
+                                <input type="hidden" name="action" value="delete_file">
+                                <input type="hidden" name="attachment_id" value="{{ att.id }}">
+                                <button type="submit" class="btn btn-red" style="padding:3px 8px; font-size:10px;">✕ Удалить</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="4" style="color:var(--text-gray); text-align:center;">Файлы еще не прикреплены</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Правая колонка: Лента комментариев по задаче -->
+    <div class="box">
+        <h2>Обсуждение и комментарии сотрудников ({{ comments|length }})</h2>
+
+        <div style="max-height:420px; overflow-y:auto; margin-bottom:14px; padding-right:4px;">
+            {% for c in comments %}
+            <div style="background:#F8FAFC; border:1px solid #DDE2EC; border-left:3px solid var(--ustage-blue); padding:10px 12px; margin-bottom:10px; border-radius:2px;">
+                <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--text-gray); margin-bottom:4px;">
+                    <b>{{ c.author.first_name }} ({{ c.author.position_title }})</b>
+                    <span>{{ c.created_at|date:"d.m.Y H:i" }}</span>
+                </div>
+                <div style="font-size:13px; white-space:pre-wrap;">{{ c.text }}</div>
+            </div>
+            {% empty %}
+            <div style="padding:20px; text-align:center; color:var(--text-gray); border:1px dashed #C5CEDB;">
+                Комментариев по задаче пока нет. Напишите первый комментарий ниже.
+            </div>
+            {% endfor %}
+        </div>
+
+        <form method="post">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="add_comment">
+            <label style="font-size:11.5px; font-weight:600;">Новый комментарий от имени «{{ active_user.first_name }}»:</label>
+            <textarea name="comment_text" rows="3" placeholder="Напишите комментарий по задаче..." required style="width:100%; margin:4px 0 10px 0;"></textarea>
+            <button type="submit" class="btn" style="width:100%;">💬 Отправить комментарий</button>
+        </form>
+    </div>
+
+</div>
+
+{% endblock %}

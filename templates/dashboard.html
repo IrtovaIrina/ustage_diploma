@@ -1,0 +1,323 @@
+{% extends 'base.html' %}
+{% block content %}
+
+<!-- 1. Открывающийся/закрывающийся блок: Статистика и выполнение планов менеджеров -->
+{% if is_boss %}
+<div class="box" style="border-top: 3px solid var(--ustage-dark); background:#FAFBFD;">
+    <h2 class="collapsible-header" data-target="box-kpi-stats" onclick="toggleBox('box-kpi-stats')">
+        <span>Статистика и выполнение планов менеджеров</span>
+        <span class="collapse-icon" id="icon-box-kpi-stats">▲ Свернуть</span>
+    </h2>
+    <div id="box-kpi-stats" class="collapsible-body">
+        <table>
+            <thead>
+                <tr>
+                    <th>Менеджер и Должность</th>
+                    <th>Проекты в работе / Завершено</th>
+                    <th>Задачи выполнены</th>
+                    <th>Фактическая сумма КП по проектам</th>
+                    <th>Задать план продаж, Проектов и Задач</th>
+                    <th>Выполнение плана</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for st in managers_kpi_stats %}
+                <tr>
+                    <td>
+                        <b>{{ st.manager.first_name }}</b><br>
+                        <span style="font-size:11px; color:var(--text-gray);">{{ st.manager.position_title }} ({{ st.manager.email }})</span>
+                    </td>
+                    <td>
+                        Всего проектов: <b>{{ st.total_projects }}</b> из плана <b>{{ st.manager.projects_plan_count }}</b><br>
+                        <span style="font-size:11px; color:var(--green);">Сдано в Завершено: <b>{{ st.completed_projects }} шт.</b> ({{ st.completed_revenue }} ₽)</span>
+                    </td>
+                    <td>
+                        Закрыто: <b>{{ st.done_tasks }}</b> из <b>{{ st.total_tasks }}</b><br>
+                        <span style="font-size:11px; color:var(--text-gray);">План задач: {{ st.manager.tasks_plan_count }} шт.</span>
+                    </td>
+                    <td>
+                        <b style="font-size:13.5px; color:var(--ustage-blue);">{{ st.fact_revenue }} ₽</b><br>
+                        <span style="font-size:11px; color:var(--text-gray);">План: {{ st.manager.monthly_sales_plan_rub }} ₽</span>
+                    </td>
+                    <td style="width:340px;">
+                        <form action="{% url 'update_manager_plan' %}" method="post" style="display:flex; gap:5px; align-items:center; flex-wrap:wrap;">
+                            {% csrf_token %}
+                            <input type="hidden" name="manager_id" value="{{ st.manager.id }}">
+                            <label style="font-size:10.5px;">План ₽:<br>
+                                <input type="text" name="monthly_sales_plan_rub" value="{{ st.manager.monthly_sales_plan_rub }}" style="width:110px; font-weight:600;">
+                            </label>
+                            <label style="font-size:10.5px;">Проекты:<br>
+                                <input type="number" name="projects_plan_count" value="{{ st.manager.projects_plan_count }}" min="1" style="width:52px;">
+                            </label>
+                            <label style="font-size:10.5px;">Задачи:<br>
+                                <input type="number" name="tasks_plan_count" value="{{ st.manager.tasks_plan_count }}" min="1" style="width:52px;">
+                            </label>
+                            <button type="submit" class="btn btn-light" style="padding:5px 8px; margin-top:12px;">💾 Задать</button>
+                        </form>
+                    </td>
+                    <td style="width:200px;">
+                        <span class="status-pill status-{{ st.status_color }}" style="width:100%; text-align:center;">
+                            {{ st.status_label }}
+                        </span>
+                        <div class="progress-bar">
+                            <div class="progress-fill" style="width:{{ st.rev_bar_pct }}%; background:var(--{{ st.status_color }});"></div>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<!-- 2. Открывающийся/закрывающийся блок: Добавление карточки на Канбан-доску -->
+<div class="box" style="border-top: 3px solid var(--ustage-blue);">
+    <h2 class="collapsible-header" data-target="box-add-card" onclick="toggleBox('box-add-card')">
+        <span>Добавление карточки на Канбан-доску</span>
+        <span class="collapse-icon" id="icon-box-add-card">▲ Свернуть</span>
+    </h2>
+
+    <div id="box-add-card" class="collapsible-body">
+        <div style="display:flex; justify-content:flex-end; align-items:center; margin-bottom:12px;">
+            {% if can_create_projects %}
+            <div style="display:flex; gap:10px;">
+                <label style="cursor:pointer; font-weight:700; background:#E8F1FA; padding:6px 12px; border-radius:3px; border:1px solid #0066CC;">
+                    <input type="radio" name="create_mode_toggle" checked onchange="document.getElementById('form-create-project').style.display='block'; document.getElementById('form-create-task').style.display='none';">
+                    1. Создать новый ПРОЕКТ
+                </label>
+                <label style="cursor:pointer; font-weight:700; background:#FFF8E6; padding:6px 12px; border-radius:3px; border:1px solid #E09F00;">
+                    <input type="radio" name="create_mode_toggle" onchange="document.getElementById('form-create-project').style.display='none'; document.getElementById('form-create-task').style.display='block';">
+                    2. Создать ЗАДАЧУ сотруднику
+                </label>
+            </div>
+            {% else %}
+            <span class="status-pill status-yellow">Режим создания рабочих задач</span>
+            {% endif %}
+        </div>
+
+        {% if can_create_projects %}
+        <form id="form-create-project" action="{% url 'create_kanban_project' %}" method="post">
+            {% csrf_token %}
+            <div style="display:grid; grid-template-columns: 1fr 1fr 0.8fr 1.4fr; gap:12px; margin-bottom:10px;">
+                <div>
+                    <label style="font-size:11.5px; font-weight:600;">Название проекта:</label>
+                    <input type="text" name="project_title" placeholder="Оснащение Театра Кукол" required style="width:100%; margin-top:4px;">
+                </div>
+                <div>
+                    <label style="font-size:11.5px; font-weight:600;">Заказчик:</label>
+                    <input type="text" name="client_name" placeholder="ГБУК Театр Кукол" required style="width:100%; margin-top:4px;">
+                </div>
+                <div>
+                    <label style="font-size:11.5px; font-weight:600;">Сумма, которую готов потратить театр, ₽:</label>
+                    <input type="text" name="client_budget_rub" placeholder="Напр.: 5000000" style="width:100%; margin-top:4px;">
+                </div>
+                <div>
+                    <label style="font-size:11.5px; font-weight:600;">Описание проекта и ТЗ от заказчика:</label>
+                    <input type="text" name="theater_tz_text" placeholder="Сцена 14х10 м, высота 7 м, зал 400 мест. Свет 16 шт., лебедок 4 шт." style="width:100%; margin-top:4px;">
+                </div>
+            </div>
+            <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+                <label style="font-size:12px;">Раздел Канбана:
+                    <select name="column_id">{% for col in all_columns %}<option value="{{ col.id }}">{{ col.title }}</option>{% endfor %}</select>
+                </label>
+                <label style="font-size:12px;">Ответственный менеджер:
+                    <select name="manager_id">
+                        {% for m in sales_managers %}
+                        <option value="{{ m.id }}" {% if m.id == active_user.id %}selected{% endif %}>{{ m.first_name }} — {{ m.position_title }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <button type="submit" class="btn">+ Создать проект</button>
+            </div>
+        </form>
+        {% endif %}
+
+        <form id="form-create-task" action="{% url 'create_kanban_task' %}" method="post" enctype="multipart/form-data" style="{% if can_create_projects %}display:none;{% else %}display:block;{% endif %}">
+            {% csrf_token %}
+            <div style="display:grid; grid-template-columns: 1fr 1fr 1.2fr; gap:12px; margin-bottom:10px;">
+                <div>
+                    <label style="font-size:11.5px; font-weight:600;">Заголовок задачи:</label>
+                    <input type="text" name="title" placeholder="Согласовать акустический расчет" required style="width:100%; margin-top:4px;">
+                </div>
+                <div>
+                    <label style="font-size:11.5px; font-weight:600;">Проект:</label>
+                    <input type="text" name="project_title_text" placeholder="Впишите название проекта текстом" required style="width:100%; margin-top:4px;">
+                </div>
+                <div>
+                    <label style="font-size:11.5px; font-weight:600;">Подробное описание задачи:</label>
+                    <input type="text" name="description" placeholder="Детали поручения для сотрудника..." style="width:100%; margin-top:4px;">
+                </div>
+            </div>
+            <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+                <label style="font-size:12px;">Раздел Канбана:
+                    <select name="column_id">{% for col in all_columns %}<option value="{{ col.id }}">{{ col.title }}</option>{% endfor %}</select>
+                </label>
+                <label style="font-size:12px;">Исполнитель:
+                    <select name="assigned_to_id">
+                        {% for m in sales_managers %}
+                        <option value="{{ m.id }}" {% if m.id == active_user.id %}selected{% endif %}>{{ m.first_name }} — {{ m.position_title }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <label style="font-size:12px;">Прикрепить файл:
+                    <input type="file" name="attachment">
+                </label>
+                <button type="submit" class="btn btn-green">+ Разместить задачу на Канбан-доске</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- 3. Открывающийся/закрывающийся блок: Настройка разделов Канбан-доски -->
+{% if is_boss %}
+<div class="box" style="background:#FAFBFD; border-left:4px solid var(--ustage-dark);">
+    <h2 class="collapsible-header" data-target="box-kanban-cols" onclick="toggleBox('box-kanban-cols')">
+        <span>Настройка разделов Канбан-доски</span>
+        <span class="collapse-icon" id="icon-box-kanban-cols">▲ Свернуть</span>
+    </h2>
+    <div id="box-kanban-cols" class="collapsible-body">
+        <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:flex-start;">
+            <form action="{% url 'manage_kanban_columns' %}" method="post" style="display:flex; gap:8px; align-items:center; background:#fff; padding:8px; border:1px solid var(--border-color); flex-wrap:wrap;">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="add">
+                <b>Новый раздел:</b>
+                <input type="number" name="order" value="6" style="width:48px;">
+                <input type="text" name="title" placeholder="Название раздела..." required style="width:185px;">
+                <label style="font-size:11px; cursor:pointer;"><input type="checkbox" name="is_logistics_stage"> 🚚 Отслеживание поставки</label>
+                <label style="font-size:11px; cursor:pointer;"><input type="checkbox" name="is_completed_stage"> ✓ Завершено</label>
+                <button type="submit" class="btn btn-green">+ Добавить</button>
+            </form>
+
+            <div style="flex:1; display:flex; gap:6px; flex-wrap:wrap;">
+                {% for col in all_columns %}
+                <form action="{% url 'manage_kanban_columns' %}" method="post" style="display:flex; gap:5px; align-items:center; background:#fff; padding:5px 7px; border:1px solid var(--border-color);">
+                    {% csrf_token %}
+                    <input type="hidden" name="column_id" value="{{ col.id }}">
+                    <input type="number" name="order" value="{{ col.order }}" style="width:42px;">
+                    <input type="text" name="title" value="{{ col.title }}" style="width:165px;">
+                    <label style="font-size:10.5px; cursor:pointer;" title="При переносе проекта в этот раздел все его оборудование автоматически добавляется в отслеживание поставки">
+                        <input type="checkbox" name="is_logistics_stage" {% if col.is_logistics_stage %}checked{% endif %}> Поставка
+                    </label>
+                    <label style="font-size:10.5px; cursor:pointer;" title="При переносе проекта в этот раздел оборудование автоматически добавляется в Цифровой паспорт">
+                        <input type="checkbox" name="is_completed_stage" {% if col.is_completed_stage %}checked{% endif %}> Заверш.
+                    </label>
+                    <button type="submit" name="action" value="update" class="btn btn-light" style="padding:4px 7px;">💾</button>
+                    <button type="submit" name="action" value="delete" class="btn btn-red" style="padding:4px 7px;">✕</button>
+                </form>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+    <h2 style="margin:0; border:none;">Канбан-доска проектов и задач ООО «Юстейдж»</h2>
+    <form method="get" style="display:flex; gap:8px; align-items:center;">
+        <span>Фильтр по сотруднику:</span>
+        <select name="manager_id" onchange="this.form.submit()">
+            <option value="">Все сотрудники и проекты</option>
+            {% for m in sales_managers %}
+            <option value="{{ m.id }}" {% if selected_mgr_id == m.id %}selected{% endif %}>{{ m.first_name }}</option>
+            {% endfor %}
+        </select>
+    </form>
+</div>
+
+<div class="kanban-board" style="grid-template-columns: repeat({{ kanban_columns|length }}, minmax(260px, 1fr)); overflow-x:auto;">
+    {% for col_data in kanban_columns %}
+    <div class="kanban-col">
+        <div class="kanban-col-title" style="border-bottom-color: {{ col_data.col.color_hex }}; display:flex; justify-content:space-between; align-items:center; gap:6px; flex-wrap:wrap;">
+            <span>{{ col_data.col.title }} — {{ col_data.total_items }}</span>
+            {% if col_data.col.is_logistics_stage %}
+                <span class="status-pill status-yellow" style="font-size:10px; padding:2px 6px; white-space:nowrap;">🚚 Поставка</span>
+            {% endif %}
+            {% if col_data.col.is_completed_stage %}
+                <span class="status-pill status-green" style="font-size:10px; padding:2px 6px; white-space:nowrap;">✓ Финал</span>
+            {% endif %}
+        </div>
+
+        {% for card in col_data.cards %}
+        <div class="kanban-card">
+            <div style="font-size:10px; font-weight:700; color:var(--ustage-blue);">ПРОЕКТ ОСНАЩЕНИЯ</div>
+            <div style="font-weight:700; font-size:13px; margin:2px 0 4px 0;">{{ card.project.title }}</div>
+            <div style="font-size:11.5px; color:var(--text-gray); margin-bottom:6px;">
+                Заказчик: <b>{{ card.project.client }}</b><br>
+                Менеджер: <b>{{ card.project.manager.first_name }}</b>
+                {% if card.project.client_budget_rub > 0 %}
+                <br>Бюджет театра: <b>{{ card.project.client_budget_rub }} ₽</b>
+                {% endif %}
+            </div>
+
+            {% if card.estimate.is_budget_exceeded %}
+            <div class="status-pill status-red" style="width:100%; margin-bottom:6px; text-align:center;">
+                ⚠️ Бюджет театра превышен на {{ card.estimate.budget_overrun_rub }} ₽!
+            </div>
+            {% endif %}
+
+            {% if card.project.is_delivery_arrived %}
+            <div class="status-pill status-green" style="width:100%; margin-bottom:6px; text-align:center;">
+                🚚 Груз прибыл на склад СПб!
+            </div>
+            {% endif %}
+
+            <div style="font-size:11.5px; margin:6px 0; padding:5px; background:#F8F9FB; border:1px solid #E2E8F0;">
+                Сумма КП: <b>{{ card.estimate.total_client_price_rub }} ₽</b> | Маржа {{ card.estimate.gross_margin_pct }}%
+            </div>
+
+            <a href="{% url 'estimate_detail' card.estimate.id %}" class="btn" style="width:100%; text-align:center; margin-bottom:6px;">
+                📊 Открыть смету и ТЗ →
+            </a>
+
+            <form action="{% url 'move_kanban_card' card.project.id %}" method="post">
+                {% csrf_token %}
+                <select name="column_id" onchange="this.form.submit()" style="width:100%; font-size:11px; padding:3px;">
+                    {% for c in all_columns %}
+                    <option value="{{ c.id }}" {% if card.project.kanban_column_id == c.id %}selected{% endif %}>→ {{ c.title }}</option>
+                    {% endfor %}
+                </select>
+            </form>
+        </div>
+        {% endfor %}
+
+        {% for t in col_data.tasks %}
+        <div class="kanban-card" style="border-left-color: {% if t.is_completed %}var(--green){% else %}var(--yellow){% endif %}; background:#FFFDF7;">
+            <div style="display:flex; justify-content:space-between; font-size:10px; font-weight:700; color:#B7791F;">
+                <span>ЗАДАЧА #{{ t.id }}</span>
+                <span>Срок: {{ t.due_date }}</span>
+            </div>
+            <div style="font-weight:700; font-size:12.5px; margin:4px 0;">
+                {% if t.is_completed %}<s>{{ t.title }}</s>{% else %}{{ t.title }}{% endif %}
+            </div>
+            <div style="font-size:11px; color:var(--text-gray); margin-bottom:6px;">
+                Проект: <b>{{ t.project_name_manual|default:t.project.title }}</b><br>
+                Исполнитель: <b>{{ t.assigned_to.first_name }}</b><br>
+                💬 Комментариев: <b>{{ t.comments.count }}</b> | 📎 Файлов: <b>{{ t.attachments.count }}</b>
+            </div>
+
+            <a href="{% url 'task_detail' t.id %}" class="btn btn-light" style="width:100%; text-align:center; margin-bottom:6px; border-color:#0066CC; color:#0066CC; font-weight:700;">
+                📂 Открыть задачу →
+            </a>
+
+            <form action="{% url 'move_or_toggle_task' t.id %}" method="post" style="display:flex; gap:4px; flex-direction:column;">
+                {% csrf_token %}
+                <select name="column_id" onchange="this.form.submit()" style="width:100%; font-size:11px; padding:3px;">
+                    {% for c in all_columns %}
+                    <option value="{{ c.id }}" {% if t.kanban_column_id == c.id %}selected{% endif %}>Раздел: {{ c.title }}</option>
+                    {% endfor %}
+                </select>
+                <div style="display:flex; gap:4px;">
+                    <button type="submit" name="toggle_done" value="1" class="btn {% if t.is_completed %}btn-green{% else %}btn-light{% endif %}" style="flex:1; font-size:10px; padding:4px;">
+                        {% if t.is_completed %}✓ Завершено{% else %}В «Завершено»{% endif %}
+                    </button>
+                    <button type="submit" name="delete_task" value="1" class="btn btn-red" style="padding:4px 8px; font-size:10px;">✕</button>
+                </div>
+            </form>
+        </div>
+        {% endfor %}
+    </div>
+    {% endfor %}
+</div>
+
+{% endblock %}

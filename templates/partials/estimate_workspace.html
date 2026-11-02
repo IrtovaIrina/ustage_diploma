@@ -1,0 +1,355 @@
+<div<div id="estimate-workspace-container">
+
+    {% if estimate.is_budget_exceeded %}
+    <div class="box" style="background:#FDE8E8; border:2px solid #DC3545; color:#C53030; padding:12px 16px;">
+        <b style="font-size:14px;">⚠️ ВНИМАНИЕ: Итоговая сумма сметы ({{ estimate.total_client_price_rub }} ₽) превышает бюджет, который готов потратить театр ({{ project.client_budget_rub }} ₽), на {{ estimate.budget_overrun_rub }} ₽!</b>
+        <div style="font-size:12px; margin-top:4px;">Замените дорогие позиции на аналоги по 44-ФЗ в таблице ниже или скорректируйте количество/наценку.</div>
+    </div>
+    {% endif %}
+
+    <!-- 1. Радар защиты проекта и финансовые показатели сметы -->
+    <div class="box" style="border-top: 3px solid var(--ustage-blue);">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
+            <div>
+                <h2 style="margin:0; border:none; padding:0;">Радар защиты проекта и финансовые показатели сметы</h2>
+                <div style="font-size:11.5px; color:var(--text-gray);">
+                    Проект: <b>{{ project.title }}</b> | Заказчик: <b>{{ project.client }}</b>
+                </div>
+            </div>
+
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                {% if estimate.is_kp_export_allowed %}
+                    <a href="{% url 'document_print' estimate.id 'kp' %}" target="_blank" class="btn btn-green">
+                        📄 Выгрузить КП (с НДС)
+                    </a>
+                {% else %}
+                    <button class="btn" style="background:#94A3B8; cursor:not-allowed;" title="Защита позиций ниже 70%. Требуется защита вендоров или разблокировка Гендиректором">
+                        🔒 Выгрузка КП заблокирована (&lt;70%)
+                    </button>
+                {% endif %}
+
+                <a href="{% url 'document_print' estimate.id 'tz44' %}" target="_blank" class="btn">
+                    🏛 Выгрузить обезличенное ТЗ 44-ФЗ
+                </a>
+
+                {% if is_ceo %}
+                <form action="{% url 'ceo_toggle_unblock_kp' estimate.id %}" method="post" style="margin:0;">
+                    {% csrf_token %}
+                    <button type="submit" class="btn {% if estimate.ceo_force_unblock_kp %}btn-red{% else %}btn-green{% endif %}">
+                        {% if estimate.ceo_force_unblock_kp %}✓ КП разблокировано Гендиректором (Отменить){% else %}🔓 Разблокировать КП решением Гендиректора{% endif %}
+                    </button>
+                </form>
+                {% endif %}
+            </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:12px;">
+            <div style="padding:10px; border:1px solid var(--border-color); background:#FAFBFD;">
+                <div style="font-size:11px; color:var(--text-gray);">Защита позиций у вендоров:</div>
+                <div style="font-size:15px; font-weight:700; margin:4px 0;">
+                    {{ estimate.protection_ratio_pct }}%
+                    {% if estimate.protection_ratio_pct >= 70 %}
+                        <span class="status-pill status-green">ЗАЩИТА ПОЛУЧЕНА</span>
+                    {% elif estimate.ceo_force_unblock_kp %}
+                        <span class="status-pill status-yellow">РАЗБЛОКИРОВАНО ГЕНДИРЕКТОРОМ</span>
+                    {% else %}
+                        <span class="status-pill status-red">НИЖЕ ПОРОГА 70%</span>
+                    {% endif %}
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width:{{ estimate.protection_ratio_pct }}%; background:{% if estimate.protection_ratio_pct >= 70 %}var(--green){% else %}var(--red){% endif %};"></div>
+                </div>
+            </div>
+
+            <div style="padding:10px; border:1px solid var(--border-color); background:#FAFBFD;">
+                <div style="font-size:11px; color:var(--text-gray);">Полная себестоимость (с буфером ЦБ +{{ estimate.fx_buffer_pct }}%, доставкой и площадкой):</div>
+                <div style="font-size:16px; font-weight:700; margin-top:4px;">{{ estimate.total_planned_cost_rub }} ₽</div>
+                <div style="font-size:11px; color:var(--text-gray);">Чистая закупка приборов: {{ estimate.base_lines_cost_rub }} ₽</div>
+            </div>
+
+            <div style="padding:10px; border:1px solid var(--border-color); background:#FAFBFD;">
+                <div style="font-size:11px; color:var(--text-gray);">Итоговая сумма КП для заказчика (с НДС):</div>
+                <div style="font-size:16px; font-weight:700; color:var(--ustage-blue); margin-top:4px;">{{ estimate.total_client_price_rub }} ₽</div>
+                <div style="font-size:11px; color:var(--text-gray);">
+                    В т.ч. НДС: <b>{{ estimate.total_vat_rub }} ₽</b> | Маржа: <b>{{ estimate.gross_margin_pct }}% ({{ estimate.gross_margin_rub }} ₽)</b>
+                </div>
+            </div>
+
+            <div style="padding:10px; border:1px solid var(--border-color); background:#FAFBFD;">
+                <div style="font-size:11px; color:var(--text-gray);">Бюджет, который готов потратить театр:</div>
+                <form hx-post="{% url 'update_project_budget' project.id %}" hx-target="#estimate-workspace-container" hx-swap="outerHTML" style="display:flex; gap:6px; margin-top:6px;">
+                    {% csrf_token %}
+                    <input type="text" name="client_budget_rub" value="{{ project.client_budget_rub }}" style="width:130px; font-weight:700;">
+                    <button type="submit" class="btn btn-light" style="padding:5px 10px;">💾 Задать</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Панель скрытых расходов, вшиваемых в позиции КП (вместо ручного счета на калькуляторе) -->
+        <form hx-post="{% url 'update_estimate_commercial_params' estimate.id %}" hx-target="#estimate-workspace-container" hx-swap="outerHTML" style="margin-top:12px; padding:10px 12px; background:#F0F5FA; border:1px solid #B8D4F2; display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
+            {% csrf_token %}
+            <div style="font-weight:700; font-size:11.5px; width:100%; color:var(--ustage-dark);">
+                ⚙️ Скрытые коммерческие параметры проекта (автоматически учитываются в цене позиций КП без ручного калькулятора):
+            </div>
+            <label style="font-size:11px;">Буфер к курсу ЦБ РФ (+3..5%), %:<br>
+                <input type="text" name="fx_buffer_pct" value="{{ estimate.fx_buffer_pct }}" style="width:75px; font-weight:600;">
+            </label>
+            <label style="font-size:11px;">Комиссия площадки / ЭТП, %:<br>
+                <input type="text" name="platform_fee_pct" value="{{ estimate.platform_fee_pct }}" style="width:75px; font-weight:600;">
+            </label>
+            <label style="font-size:11px;">Доставка и доп. расходы, ₽:<br>
+                <input type="text" name="delivery_cost_rub" value="{{ estimate.delivery_cost_rub }}" style="width:110px; font-weight:600;">
+            </label>
+            <label style="font-size:11px;">Стоимость монтажа / ПНР (если нужен), ₽:<br>
+                <input type="text" name="installation_cost_rub" value="{{ estimate.installation_cost_rub }}" style="width:120px; font-weight:600;">
+            </label>
+            <label style="font-size:11.5px; cursor:pointer; background:#fff; padding:6px 10px; border:1px solid #C5CEDB; border-radius:2px;">
+                <input type="checkbox" name="embed_hidden_costs" {% if estimate.embed_hidden_costs %}checked{% endif %}>
+                <b>Вшить доставку и монтаж внутрь цены позиций КП</b> (не показывать отдельной строкой)
+            </label>
+            <button type="submit" class="btn">Пересчитать КП и маржу</button>
+        </form>
+    </div>
+
+    <!-- 2. Анализ ТЗ театра и параметрический калькулятор сценической обвязки по габаритам сцены -->
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:14px;">
+        <div class="box">
+            <h2>Анализ ТЗ театра и автоподбор комплекта оборудования</h2>
+            <form hx-post="{% url 'analyze_tz_and_autoselect' estimate.id %}" hx-target="#estimate-workspace-container" hx-swap="outerHTML">
+                {% csrf_token %}
+                <label style="font-size:11.5px; font-weight:600;">Текст ТЗ заказчика:</label>
+                <textarea name="theater_tz_text" rows="3" style="width:100%; margin:4px 0 8px 0;">{{ project.theater_tz_text }}</textarea>
+                <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                    <label style="font-size:11.5px;">Мест в зале:
+                        <input type="number" name="hall_seats" value="{{ project.hall_seats }}" style="width:75px;">
+                    </label>
+                    <label style="font-size:11.5px;">Сумма бюджета театра, ₽:
+                        <input type="text" name="client_budget_rub" value="{{ project.client_budget_rub }}" style="width:120px;">
+                    </label>
+                    <button type="submit" class="btn">⚡ Рассчитать комплект и обвязку по ТЗ</button>
+                </div>
+            </form>
+        </div>
+
+        <div class="box">
+            <h2>Параметрический калькулятор сценической обвязки по размерам сцены</h2>
+            <form hx-post="{% url 'apply_auto_rigger' estimate.id %}" hx-target="#estimate-workspace-container" hx-swap="outerHTML">
+                {% csrf_token %}
+                <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:8px; margin-bottom:8px;">
+                    <label style="font-size:11px;">Ширина сцены W, м:<br><input type="text" name="stage_width" value="{{ project.stage_width }}" style="width:100%;"></label>
+                    <label style="font-size:11px;">Глубина сцены D, м:<br><input type="text" name="stage_depth" value="{{ project.stage_depth }}" style="width:100%;"></label>
+                    <label style="font-size:11px;">Высота подвеса H, м:<br><input type="text" name="stage_height" value="{{ project.stage_height }}" style="width:100%;"></label>
+                </div>
+                <div style="padding:7px 10px; background:#F8FAFC; border:1px solid var(--border-color); font-size:11.5px; margin-bottom:8px;">
+                    Трасса DMX-512 (+15%): <b>{{ rigger_calc.dmx_cable_meters }} м</b> |
+                    Струбцины и тросики: <b>{{ rigger_calc.clamps_count }} шт.</b> |
+                    Вес: <b>{{ rigger_calc.total_weight_kg }} / {{ project.max_rigging_weight_kg }} кг</b> |
+                    Мощность: <b>{{ rigger_calc.total_power_kw }} / {{ project.max_power_kw }} кВт</b>
+                </div>
+                <button type="submit" class="btn btn-green" style="width:100%;">🔧 Применить авторасчет кабелей, разъемов и крепежа в смету</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- 3. Подбор оборудования из каталога + Ручное добавление нестандартного оборудования -->
+    <div class="box">
+        <h2>Подбор оборудования в КП (из каталога или ручным вводом позиции)</h2>
+
+        <!-- Форма ручного ввода произвольного оборудования менеджером -->
+        <form hx-post="{% url 'add_manual_estimate_line' estimate.id %}" hx-target="#estimate-workspace-container" hx-swap="outerHTML" style="background:#FFFDF7; border:1px solid #F6E05E; padding:10px; margin-bottom:12px; display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
+            {% csrf_token %}
+            <div style="width:100%; font-weight:700; font-size:11.5px; color:#B7791F;">
+                ✍️ Добавить нестандартное оборудование в КП вручную (если позиции нет в базе поставщиков):
+            </div>
+            <label style="font-size:11px; flex:1.2; min-width:180px;">Наименование и модель:<br>
+                <input type="text" name="manual_name" placeholder="Напр.: Штанкетная лебедка спецзаказ" required style="width:100%;">
+            </label>
+            <label style="font-size:11px; flex:1.4; min-width:200px;">Технические характеристики (для КП и ТЗ 44-ФЗ):<br>
+                <input type="text" name="manual_specs" placeholder="Грузоподъемность 500 кг, скорость 0.4 м/с, 380В" required style="width:100%;">
+            </label>
+            <label style="font-size:11px; width:130px;">Поставщик:<br>
+                <input type="text" name="manual_vendor_name" placeholder="Завод / Дилер" style="width:100%;">
+            </label>
+            <label style="font-size:11px; width:100px;">Закупка за ед.:<br>
+                <input type="text" name="manual_unit_price" placeholder="45000.00" required style="width:100%;">
+            </label>
+            <label style="font-size:11px; width:75px;">Валюта:<br>
+                <select name="manual_currency_code" style="width:100%;">
+                    <option value="RUB">RUB</option>
+                    <option value="CNY">CNY</option>
+                    <option value="EUR">EUR</option>
+                    <option value="USD">USD</option>
+                    <option value="TMT">TMT</option>
+                </select>
+            </label>
+            <label style="font-size:11px; width:55px;">Кол-во:<br>
+                <input type="number" name="quantity" value="1" min="1" style="width:100%;">
+            </label>
+            <label style="font-size:11px; width:65px;">Наценка %:<br>
+                <input type="text" name="markup_pct" value="25.00" style="width:100%;">
+            </label>
+            <label style="font-size:11px; width:75px;">Ставка НДС:<br>
+                <select name="vat_rate_pct" style="width:100%;">
+                    <option value="20.00">20%</option>
+                    <option value="5.00">5%</option>
+                    <option value="7.00">7%</option>
+                    <option value="0.00">Без НДС</option>
+                </select>
+            </label>
+            <button type="submit" class="btn btn-green">+ Вписать в КП</button>
+        </form>
+
+        <!-- Каскадный подбор из каталога -->
+        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px; background:#F8FAFC; padding:8px; border:1px solid var(--border-color);">
+            <label style="font-size:11.5px; font-weight:600;">Раздел:
+                <select name="cat_id" hx-get="{% url 'estimate_detail' estimate.id %}" hx-target="#estimate-workspace-container" hx-swap="outerHTML" hx-include="[name='q']">
+                    <option value="">Все разделы</option>
+                    {% for c in categories %}
+                    <option value="{{ c.id }}" {% if selected_cat_id == c.id %}selected{% endif %}>{{ c.name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label style="font-size:11.5px; font-weight:600;">Подраздел:
+                <select name="subcat_id" hx-get="{% url 'estimate_detail' estimate.id %}" hx-target="#estimate-workspace-container" hx-swap="outerHTML" hx-include="[name='cat_id'],[name='q']">
+                    <option value="">Все подразделы выбранного раздела</option>
+                    {% for sc in subcategories %}
+                    <option value="{{ sc.id }}" {% if selected_subcat_id == sc.id %}selected{% endif %}>{{ sc.category.name }} → {{ sc.name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <input type="text" name="q" value="{{ search_query }}" placeholder="Поиск по артикулу, названию, характеристикам..." style="flex:1;"
+                   hx-get="{% url 'estimate_detail' estimate.id %}" hx-target="#estimate-workspace-container" hx-swap="outerHTML" hx-trigger="keyup changed delay:400ms" hx-include="[name='cat_id'],[name='subcat_id']">
+        </div>
+
+        <div style="max-height:210px; overflow-y:auto; border:1px solid var(--border-color);">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Артикул</th>
+                        <th>Раздел → Подраздел</th>
+                        <th>Наименование и ТТХ</th>
+                        <th>Цена / Наличие</th>
+                        <th>Добавить в смету</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for it in catalog_items %}
+                    <tr>
+                        <td><b>{{ it.sku }}</b></td>
+                        <td style="font-size:11px;">{{ it.category.name }} → {{ it.subcategory.name }}</td>
+                        <td>
+                            <b>{{ it.brand }} {{ it.name }}</b><br>
+                            <span style="font-size:11px; color:var(--text-gray);">{{ it.specs_text }}</span>
+                        </td>
+                        <td>
+                            {{ it.retail_price }} {{ it.vendor.currency.code }}<br>
+                            {% if it.stock_status == 'in_stock' %}
+                                <span class="status-pill status-green">В наличии: {{ it.stock_qty }} шт.</span>
+                            {% else %}
+                                <span class="status-pill status-red">Нет у поставщика</span>
+                            {% endif %}
+                        </td>
+                        <td style="width:150px;">
+                            <form hx-post="{% url 'add_estimate_line' estimate.id %}" hx-target="#estimate-workspace-container" hx-swap="outerHTML" style="display:flex; gap:4px;">
+                                {% csrf_token %}
+                                <input type="hidden" name="item_id" value="{{ it.id }}">
+                                <input type="number" name="quantity" value="2" min="1" style="width:48px;">
+                                <button type="submit" class="btn">+ В смету</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- 4. Спецификация оборудования проекта с расчетом НДС и подбором эквивалентов 44-ФЗ -->
+    <div class="box">
+        <h2>Спецификация оборудования проекта (с расчетом НДС, вшитых расходов и заменой по 44-ФЗ)</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>№</th>
+                    <th>Оборудование и ТТХ</th>
+                    <th>Поставщик и Наличие</th>
+                    <th>Кол-во</th>
+                    <th>Защита</th>
+                    <th>Наценка %</th>
+                    <th>Ставка и сумма НДС</th>
+                    <th>Себестоимость (с буфером ЦБ)</th>
+                    <th>Итого в КП (с вшитыми расх. и НДС)</th>
+                    <th>Аналог по 44-ФЗ и Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for line in estimate.lines.all %}
+                <tr>
+                    <td>{{ forloop.counter }}</td>
+                    <td>
+                        <b>{{ line.display_name }}</b>
+                        {% if line.is_manual_item %}
+                            <span class="status-pill status-yellow" style="font-size:9.5px;">✍️ Ручной ввод</span>
+                        {% endif %}
+                        {% if line.is_auto_rigged %}
+                            <span class="status-pill status-green" style="font-size:9.5px;">🔧 Auto-Rigger</span>
+                        {% endif %}
+                        <br>
+                        <span style="font-size:11px; color:var(--text-gray);">ТТХ: {{ line.display_specs }}</span>
+                    </td>
+                    <td>
+                        {{ line.display_vendor }}<br>
+                        {% if line.is_manual_item %}
+                            <span class="status-pill status-green">Под заказ ({{ line.manual_currency_code }})</span>
+                        {% elif line.item.stock_status == 'in_stock' %}
+                            <span class="status-pill status-green">В наличии: {{ line.item.stock_qty }} шт.</span>
+                        {% else %}
+                            <span class="status-pill status-red">⚠️ Нет у поставщика!</span>
+                        {% endif %}
+                    </td>
+                    <td colspan="4">
+                        <form hx-post="{% url 'update_estimate_line' line.id %}" hx-target="#estimate-workspace-container" hx-swap="outerHTML" style="display:flex; gap:8px; align-items:center;">
+                            {% csrf_token %}
+                            <input type="number" name="quantity" value="{{ line.quantity }}" min="1" style="width:52px;" onchange="this.form.requestSubmit()">
+                            <label style="font-size:11px; cursor:pointer;">
+                                <input type="checkbox" name="is_protected" {% if line.is_protected %}checked{% endif %} onchange="this.form.requestSubmit()"> Защита
+                            </label>
+                            <div>
+                                <input type="text" name="markup_pct" value="{{ line.markup_pct }}" style="width:58px;" onchange="this.form.requestSubmit()"> %
+                            </div>
+                            <div>
+                                <select name="vat_rate_pct" onchange="this.form.requestSubmit()" style="font-size:11px; padding:3px;">
+                                    <option value="20.00" {% if line.vat_rate_pct == 20 %}selected{% endif %}>НДС 20%</option>
+                                    <option value="5.00" {% if line.vat_rate_pct == 5 %}selected{% endif %}>НДС 5%</option>
+                                    <option value="7.00" {% if line.vat_rate_pct == 7 %}selected{% endif %}>НДС 7%</option>
+                                    <option value="0.00" {% if line.vat_rate_pct == 0 %}selected{% endif %}>Без НДС</option>
+                                </select>
+                                <div style="font-size:10.5px; color:var(--text-gray);">НДС: <b>{{ line.vat_amount_rub }} ₽</b></div>
+                            </div>
+                        </form>
+                    </td>
+                    <td>{{ line.planned_line_cost_rub }} ₽</td>
+                    <td>
+                        <b style="font-size:13px;">{{ line.client_line_total_rub }} ₽</b><br>
+                        <span style="font-size:10.5px; color:var(--text-gray);">({{ line.client_unit_price_rub }} ₽/шт.)</span>
+                    </td>
+                    <td style="width:190px;">
+                        {% if not line.is_manual_item and line.item.recommended_analog %}
+                        <form hx-post="{% url 'replace_with_analog' line.id %}" hx-target="#estimate-workspace-container" hx-swap="outerHTML" style="margin-bottom:4px;">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-green" style="width:100%; font-size:10px; padding:4px;">
+                                🔄 Заменить на: {{ line.item.recommended_analog.brand }}
+                            </button>
+                        </form>
+                        {% endif %}
+                        <form hx-post="{% url 'delete_estimate_line' line.id %}" hx-target="#estimate-workspace-container" hx-swap="outerHTML">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-red" style="width:100%; font-size:10px; padding:4px;">✕ Удалить из сметы</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>

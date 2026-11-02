@@ -1,0 +1,24 @@
+{% extends 'base.html' %}
+{% block content %}
+
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:10px;">
+    <div>
+        <a href="{% url 'dashboard' %}" class="btn btn-light">← Назад на Канбан-доску</a>
+        <span style="font-family:'Montserrat',sans-serif; font-size:18px; font-weight:700; margin-left:10px;">
+            {{ project.title }}
+        </span>
+    </div>
+
+    <!-- Кнопка консультации у главного инженера (п.12) -->
+    <form action="{% url 'request_engineer_check' project.id %}" method="post" style="display:flex; align-items:center; gap:10px;">
+        {% csrf_token %}
+        <span class="status-pill status-green">Инженерный контроль: {{ project.engineer_review_status }}</span>
+        <button type="submit" class="btn btn-light">Запросить проверку у гл. инженера Александрова А.В.</button>
+    </form>
+</div>
+
+<div id="estimate-workspace">
+    {% include 'partials/estimate_workspace.html' %}
+</div>
+
+{% endblock %}
