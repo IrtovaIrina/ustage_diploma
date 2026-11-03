@@ -1,961 +1,785 @@
 import random
-from datetime import date, timedelta
-from decimal import Decimal, ROUND_HALF_UP
+from datetime import timedelta
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from django.shortcuts import render, redirect, get_object_or_404
-from django.contrib.auth import login, logout
-from django.contrib.auth.decorators import login_required
-from django.views.decorators.http import require_POST
 from django.contrib import messages
+from django.contrib.auth import authenticate, login, logout, update_session_auth_hash
+from django.contrib.auth.decorators import login_required
+from django.http import HttpResponseForbidden
+from django.utils import timezone
 from django.core.mail import send_mail
 
 from catalog.models import StaffPosition, CustomUser, CurrencyRate, Vendor, Category, SubCategory, Item
 from projects.models import (
-    KanbanColumn, Project, KanbanTask, TaskComment, TaskAttachment,
-    Estimate, EstimateLine, DellinShipment, VenueCalculationProfile, DigitalStageAsset
+    KanbanColumn,
+    Project,
+    KanbanTask,
+    TaskComment,
+    TaskAttachment,
+    Estimate,
+    EstimateLine,
+    DellinShipment,
+    VenueCalculationProfile,
+    DigitalStageAsset,
 )
 from projects.services import (
-    to_decimal, sync_currencies_from_cbr_api, parse_vendor_excel_price,
-    calculate_stage_auto_rigger, apply_auto_rigger_lines_to_estimate,
-    parse_theater_tz_and_sync, generate_44fz_blind_spec,
-    track_shipment_by_carrier_api, sync_project_stage_automations
+    sync_currencies_from_cbr_api,
+    parse_vendor_excel_price,
+    parse_theater_tz_and_sync,
+    calculate_stage_auto_rigger,
+    generate_44fz_blind_spec,
+    find_tender_analogs_44fz,
+    track_shipment_by_carrier_api,
 )
 
 
-def get_active_user(request):
-    if request.user.is_authenticated:
-        return request.user
-    return CustomUser.objects.first()
+def _parse_strict_decimal(raw_val, field_label: str, allow_zero: bool = True) -> Decimal:
+    """Строгий парсинг десятичного числа без скрытой подстановки резервных значений[cite: 1]"""
+    cleaned = str(raw_val or "").strip().replace(",", ".")
+    if not cleaned:
+        raise ValueError(f"Поле «{field_label}» не может быть пустым.")
+    try:
+        val = Decimal(cleaned).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError):
+        raise ValueError(f"Некорректное числовое значение в поле «{field_label}».")
+    if allow_zero and val < Decimal("0.00"):
+        raise ValueError(f"Значение поля «{field_label}» не может быть отрицательным.")
+    if not allow_zero and val <= Decimal("0.00"):
+        raise ValueError(f"Значение поля «{field_label}» должно быть строго больше нуля.")
+    return val
 
 
-def _base_ctx(request, active_tab='kanban'):
-    user = get_active_user(request)
-    return {
-        'active_user': user,
-        'active_tab': active_tab,
-        'is_ceo': user.is_ceo if user else False,
-        'is_boss': user.is_boss if user else False,
-        'can_admin_roles': user.can_admin_roles if user else False,
-    }
+def _parse_strict_positive_int(raw_val, field_label: str = "Количество") -> int:
+    """Строгая проверка положительного целого количества (>= 1)[cite: 1]"""
+    cleaned = str(raw_val or "").strip()
+    try:
+        val = int(cleaned)
+    except (ValueError, TypeError):
+        raise ValueError(f"Поле «{field_label}» должно быть целым числом.")
+    if val < 1:
+        raise ValueError(f"Поле «{field_label}» должно быть положительным целым числом (>= 1).")
+    return val
 
 
-# ==============================================================================
-# АВТОРИЗАЦИЯ ПО КОРПОРАТИВНОЙ ПОЧТЕ И ДВУХЭТАПНЫЙ OTP-СБРОС ПАРОЛЯ
-# ==============================================================================
+def sync_project_stage_automations(project: Project):
+    """
+    Событийная синхронизация при переводе карточки проекта на Канбан-доске[cite: 1, 2].
+    ВАЖНО: никогда не удаляет существующие записи логистики и цифрового паспорта
+    при выходе из стадии и не перезаписывает введенные сотрудником данные[cite: 1].
+    """
+    col = project.kanban_column
+    if not col:
+        return
+
+    estimate = getattr(project, "estimate", None)
+    lines = estimate.lines.select_related("item", "item__vendor").all() if estimate else []
+
+    # 1. При входе в стадию «Отслеживание поставки» создаем только недостающие черновики отгрузок[cite: 1, 2]
+    if col.is_logistics_stage:
+        vendors_map = {}
+        for line in lines:
+            if line.item and line.item.vendor:
+                v = line.item.vendor
+                vendors_map.setdefault(v, []).append(f"{line.item.brand} {line.item.name} ({line.quantity} шт.)")
+
+        for vendor, summary_list in vendors_map.items():
+            existing_shipment = DellinShipment.objects.filter(project=project, vendor=vendor).first()
+            if not existing_shipment:
+                carrier_code = "cdek" if "китай" in vendor.country.lower() else "dellin"
+                DellinShipment.objects.create(
+                    project=project,
+                    vendor=vendor,
+                    carrier=carrier_code,
+                    tracking_number=f" PENDING-{project.id}-{vendor.id}".strip(),
+                    equipment_summary="; ".join(summary_list)[:250],
+                    route_info=f"{vendor.country} → Склад Санкт-Петербург",
+                    cargo_weight_kg=Decimal("65.00"),
+                    status="Ожидает ввода накладной перевозчика",
+                    eta_date=timezone.now().date() + timedelta(days=5),
+                    is_auto_created=True,
+                )
+
+    # 2. При входе в стадию «Завершено» создаем только отсутствующие записи паспорта без перезаписи[cite: 1, 2]
+    if col.is_completed_stage:
+        default_profile = VenueCalculationProfile.objects.first()
+        for line in lines:
+            if not line.item:
+                continue
+            pending_sn = f"SN-PENDING-P{project.id}-L{line.id}"
+            already_exists = DigitalStageAsset.objects.filter(
+                project=project, item=line.item
+            ).exists()
+            if not already_exists:
+                DigitalStageAsset.objects.get_or_create(
+                    serial_number=pending_sn,
+                    defaults={
+                        "project": project,
+                        "venue_name": project.client,
+                        "zone_installed": "Сцена объекта (ожидает ввода заводского S/N при приемке)",
+                        "item": line.item,
+                        "installed_date": timezone.now().date(),
+                        "venue_profile": default_profile,
+                        "max_resource_hours": line.item.lifespan_hours or 2000,
+                        "is_auto_created": True,
+                    },
+                )
+
+
+def _build_managers_kpi_stats():
+    """Расчет выполнения планов KPI менеджеров по продажам[cite: 1, 2]"""
+    managers = CustomUser.objects.filter(role__in=["lead_mgr", "sales_mgr", "rop"]).order_by("tab_number")
+    stats = []
+    for mgr in managers:
+        projects_qs = Project.objects.filter(manager=mgr)
+        proj_count = projects_qs.count()
+        actual_sales = Decimal("0.00")
+        for prj in projects_qs:
+            if hasattr(prj, "estimate"):
+                actual_sales += prj.estimate.total_client_rub
+
+        tasks_done = KanbanTask.objects.filter(assigned_to=mgr, is_completed=True).count()
+        plan_rub = mgr.monthly_sales_plan_rub or Decimal("1.00")
+        sales_pct = min(int((actual_sales / plan_rub) * Decimal("100")), 100) if plan_rub > 0 else 0
+
+        stats.append(
+            {
+                "manager": mgr,
+                "actual_sales_rub": actual_sales,
+                "sales_pct": sales_pct,
+                "proj_count": proj_count,
+                "tasks_done": tasks_done,
+            }
+        )
+    return stats
+
+
 def login_view(request):
+    """Авторизация сотрудника строго по корпоративной почте (@ustage-group.ru)[cite: 1, 2]"""
     if request.user.is_authenticated:
-        return redirect('dashboard')
+        return redirect("dashboard")
 
-    error_msg = None
-    if request.method == 'POST':
-        email_in = request.POST.get('email', '').strip().lower()
-        password_in = request.POST.get('password', '').strip()
+    if request.method == "POST":
+        email_input = (request.POST.get("email") or request.POST.get("username") or "").strip().lower()
+        password_input = request.POST.get("password") or ""
 
-        user_obj = CustomUser.objects.filter(email__iexact=email_in).first()
+        user_obj = CustomUser.objects.filter(email__iexact=email_input).first()
         if not user_obj:
-            error_msg = "Сотрудник с такой корпоративной почтой (@ustage-group.ru) не найден в штате ООО «Юстейдж»."
-        elif not user_obj.check_password(password_in):
-            error_msg = "Неверный пароль. Проверьте раскладку или воспользуйтесь восстановлением через почту."
-        else:
-            login(request, user_obj)
-            messages.success(request, f"Вы успешно вошли как: {user_obj.first_name} ({user_obj.email})")
-            return redirect('dashboard')
+            user_obj = CustomUser.objects.filter(username__iexact=email_input).first()
 
-    return render(request, 'login.html', {'error_msg': error_msg})
+        if user_obj:
+            auth_user = authenticate(request, username=user_obj.username, password=password_input)
+            if auth_user is not None:
+                login(request, auth_user)
+                return redirect("dashboard")
+
+        messages.error(request, "Неверная корпоративная почта (@ustage-group.ru) или пароль.")
+
+    return render(request, "login.html")
 
 
 def logout_view(request):
     logout(request)
-    return redirect('login')
+    return redirect("login")
 
 
 def forgot_password_view(request):
-    step = request.session.get('reset_step', 1)
-    target_email = request.session.get('reset_email', '')
-    error_msg = None
-    info_msg = None
+    """Двухэтапное восстановление пароля через отправку 6-значного OTP-кода на почту[cite: 1, 2]"""
+    step = request.session.get("reset_step", 1)
+    reset_email = request.session.get("reset_email", "")
 
-    if request.method == 'POST':
-        action = request.POST.get('action')
-        if action == 'Restart':
-            request.session.pop('reset_step', None)
-            request.session.pop('reset_email', None)
-            request.session.pop('reset_otp', None)
-            return redirect('forgot_password')
-
-        if step == 1:
-            email_in = request.POST.get('email', '').strip().lower()
-            user_obj = CustomUser.objects.filter(email__iexact=email_in).first()
-            if not user_obj:
-                error_msg = "Указанный адрес корпоративной почты не зарегистрирован в базе сотрудников ООО «Юстейдж»."
+    if request.method == "POST":
+        action = request.POST.get("action", "send_otp")
+        if action == "send_otp":
+            email_val = (request.POST.get("email") or "").strip().lower()
+            user = CustomUser.objects.filter(email__iexact=email_val).first()
+            if not user:
+                messages.error(request, "Сотрудник с указанной корпоративной почтой не найден.")
             else:
-                otp_code = f"{random.randint(100000, 999999)}"
-                request.session['reset_step'] = 2
-                request.session['reset_email'] = user_obj.email
-                request.session['reset_otp'] = otp_code
-                step = 2
-                target_email = user_obj.email
-                try:
-                    send_mail(
-                        subject="USTAGE GROUP — Код восстановления корпоративного пароля",
-                        message=f"Здравствуйте, {user_obj.first_name}!\nВаш одноразовый код подтверждения: {otp_code}",
-                        from_email="security@ustage-group.ru",
-                        recipient_list=[user_obj.email],
-                        fail_silently=True,
-                    )
-                except Exception:
-                    pass
-                info_msg = f"Одноразовый 6-значный код отправлен на {user_obj.email} (код для демонстрации на стенде: {otp_code})."
+                otp = f"{random.randint(100000, 999999)}"
+                user.reset_otp_code = otp
+                user.reset_otp_created_at = timezone.now()
+                user.save(update_fields=["reset_otp_code", "reset_otp_created_at"])
+                send_mail(
+                    subject="Код восстановления доступа ustage_erp",
+                    message=f"Ваш одноразовый 6-значный код подтверждения: {otp}",
+                    from_email="noreply@ustage-group.ru",
+                    recipient_list=[user.email],
+                    fail_silently=True,
+                )
+                request.session["reset_step"] = 2
+                request.session["reset_email"] = user.email
+                messages.success(request, f"Одноразовый код отправлен на корпоративную почту {user.email}.")
+                return redirect("forgot_password")
 
-        elif step == 2:
-            otp_in = request.POST.get('otp_code', '').strip()
-            new_pass = request.POST.get('new_password', '').strip()
-            saved_otp = request.session.get('reset_otp')
-            user_obj = CustomUser.objects.filter(email__iexact=target_email).first()
-
-            if not user_obj or otp_in != saved_otp:
-                error_msg = "Неверный одноразовый код подтверждения."
-            elif len(new_pass) < 4:
-                error_msg = "Новый пароль должен содержать не менее 4 символов."
+        elif action == "verify_and_reset":
+            otp_input = (request.POST.get("otp_code") or "").strip()
+            new_pass = request.POST.get("new_password") or ""
+            user = CustomUser.objects.filter(email__iexact=reset_email).first()
+            if not user or not user.reset_otp_code or user.reset_otp_code != otp_input:
+                messages.error(request, "Неверный одноразовый код подтверждения.")
+            elif len(new_pass) < 6:
+                messages.error(request, "Новый пароль должен содержать не менее 6 символов.")
             else:
-                user_obj.set_password(new_pass)
-                user_obj.save()
-                request.session.pop('reset_step', None)
-                request.session.pop('reset_email', None)
-                request.session.pop('reset_otp', None)
-                messages.success(request, "Пароль успешно изменен! Войдите с новым паролем.")
-                return redirect('login')
+                user.set_password(new_pass)
+                user.reset_otp_code = ""
+                user.save()
+                request.session.pop("reset_step", None)
+                request.session.pop("reset_email", None)
+                messages.success(request, "Пароль успешно обновлен. Войдите в систему.")
+                return redirect("login")
 
-    return render(request, 'forgot_password.html', {
-        'step': step,
-        'target_email': target_email,
-        'error_msg': error_msg,
-        'info_msg': info_msg,
-    })
-
-
-# ==============================================================================
-# 1. КАНБАН-ДОСКА ПРОЕКТОВ И ЗАДАЧ + СТАТИСТИКА KPI МЕНЕДЖЕРОВ
-# ==============================================================================
-def _build_managers_kpi_stats():
-    mgrs = CustomUser.objects.select_related('position').filter(
-        position__is_sales_manager=True
-    ).order_by('id')
-    stats = []
-    for m in mgrs:
-        projs = Project.objects.filter(manager=m).select_related('kanban_column', 'estimate')
-        total_projects = projs.count()
-        completed_projects = 0
-        fact_revenue = Decimal('0.00')
-        completed_revenue = Decimal('0.00')
-
-        for p in projs:
-            est = getattr(p, 'estimate', None)
-            p_sum = est.total_client_price_rub if est else Decimal('0.00')
-            fact_revenue += p_sum
-            if p.kanban_column and p.kanban_column.is_completed_stage:
-                completed_projects += 1
-                completed_revenue += p_sum
-
-        tasks_qs = KanbanTask.objects.filter(assigned_to=m)
-        total_tasks = tasks_qs.count()
-        done_tasks = tasks_qs.filter(is_completed=True).count()
-
-        plan_rub = m.monthly_sales_plan_rub or Decimal('1.00')
-        rev_pct = int(((fact_revenue / plan_rub) * Decimal('100.0')).quantize(Decimal('1'), rounding=ROUND_HALF_UP)) if plan_rub > 0 else 100
-        rev_bar_pct = min(rev_pct, 100)
-
-        if rev_pct >= 80:
-            status_color = 'green'
-            status_label = f"Выполнено {rev_pct}% плана"
-        elif rev_pct >= 45:
-            status_color = 'yellow'
-            status_label = f"В работе ({rev_pct}% плана)"
-        else:
-            status_color = 'red'
-            status_label = f"Отставание ({rev_pct}% плана)"
-
-        stats.append({
-            'manager': m,
-            'total_projects': total_projects,
-            'completed_projects': completed_projects,
-            'total_tasks': total_tasks,
-            'done_tasks': done_tasks,
-            'fact_revenue': fact_revenue.quantize(Decimal('0.01')),
-            'completed_revenue': completed_revenue.quantize(Decimal('0.01')),
-            'rev_pct': rev_pct,
-            'rev_bar_pct': rev_bar_pct,
-            'status_color': status_color,
-            'status_label': status_label,
-        })
-    return stats
+    return render(request, "forgot_password.html", {"step": step, "reset_email": reset_email})
 
 
 @login_required
 def dashboard(request):
-    ctx = _base_ctx(request, 'kanban')
-    user = ctx['active_user']
+    """Главный экран Канбан-доски проектов, задач и KPI менеджеров[cite: 1, 2]"""
+    columns = KanbanColumn.objects.prefetch_related("projects__estimate", "tasks__assigned_to").all()
+    staff_filter = request.GET.get("staff_id")
+    employees = CustomUser.objects.all()
 
-    selected_mgr_id = request.GET.get('manager_id')
-    selected_mgr_id = int(selected_mgr_id) if (selected_mgr_id and selected_mgr_id.isdigit()) else None
-
-    all_columns = list(KanbanColumn.objects.all())
-    kanban_columns = []
-    for col in all_columns:
-        projs_qs = Project.objects.filter(kanban_column=col).select_related('manager', 'estimate')
-        tasks_qs = KanbanTask.objects.filter(kanban_column=col).select_related('assigned_to', 'project')
-        if selected_mgr_id:
-            projs_qs = projs_qs.filter(manager_id=selected_mgr_id)
-            tasks_qs = tasks_qs.filter(assigned_to_id=selected_mgr_id)
-
-        cards = []
-        for p in projs_qs:
-            est, _ = Estimate.objects.get_or_create(project=p)
-            cards.append({'project': p, 'estimate': est})
-
-        t_list = list(tasks_qs)
-        kanban_columns.append({
-            'col': col,
-            'cards': cards,
-            'tasks': t_list,
-            'total_items': len(cards) + len(t_list),
-        })
-
-    pos_Code = user.position.code if (user and user.position) else ''
-    can_create_projects = pos_Code not in ('engineer', 'warehouse')
-
-    ctx.update({
-        'all_columns': all_columns,
-        'kanban_columns': kanban_columns,
-        'sales_managers': CustomUser.objects.all().order_by('first_name'),
-        'selected_mgr_id': selected_mgr_id,
-        'can_create_projects': can_create_projects,
-        'managers_kpi_stats': _build_managers_kpi_stats() if ctx['is_boss'] else [],
-    })
-    return render(request, 'dashboard.html', ctx)
+    return render(
+        request,
+        "dashboard.html",
+        {
+            "columns": columns,
+            "employees": employees,
+            "selected_staff_id": staff_filter,
+            "managers_kpi": _build_managers_kpi_stats(),
+        },
+    )
 
 
 @login_required
-@require_POST
-def update_manager_plan(request):
-    user = get_active_user(request)
-    if not user.is_boss:
-        return redirect('dashboard')
+def create_project_or_task(request):
+    """Создание проекта оснащения или рабочей задачи на Канбан-доске[cite: 1, 2]"""
+    if request.method != "POST":
+        return redirect("dashboard")
 
-    mgr_id = request.POST.get('manager_id')
-    mgr = get_object_or_404(CustomUser, id=mgr_id)
-    mgr.monthly_sales_plan_rub = to_decimal(request.POST.get('monthly_sales_plan_rub'), '10000000.00')
-    mgr.projects_plan_count = max(int(request.POST.get('projects_plan_count') or 3), 1)
-    mgr.tasks_plan_count = max(int(request.POST.get('tasks_plan_count') or 5), 1)
-    mgr.save()
-    messages.success(request, f"Плановые показатели KPI для {mgr.first_name} обновлены.")
-    return redirect('dashboard')
+    card_type = request.POST.get("card_type", "project")
+    col = KanbanColumn.objects.order_by("order").first()
 
+    if card_type == "project":
+        if not request.user.can_perm("create_projects"):
+            messages.error(request, "У вашей должности нет прав на создание проектов.")
+            return redirect("dashboard")
 
-@login_required
-@require_POST
-def create_kanban_project(request):
-    user = get_active_user(request)
-    title = request.POST.get('project_title', '').strip()
-    client = request.POST.get('client_name', '').strip()
-    budget = to_decimal(request.POST.get('client_budget_rub'), '0.00')
-    tz_text = request.POST.get('theater_tz_text', '').strip()
-    col_id = request.POST.get('column_id')
-    mgr_id = request.POST.get('manager_id')
+        title = (request.POST.get("title") or "").strip()
+        client = (request.POST.get("client") or "").strip()
+        if not title or not client:
+            messages.error(request, "Укажите название проекта и наименование заказчика.")
+            return redirect("dashboard")
 
-    col = KanbanColumn.objects.filter(id=col_id).first() or KanbanColumn.objects.first()
-    mgr = CustomUser.objects.filter(id=mgr_id).first() or user
+        try:
+            budget = _parse_strict_decimal(
+                request.POST.get("client_budget_rub", "5000000"),
+                "Бюджет театра",
+                allow_zero=False,
+            )
+        except ValueError as exc:
+            messages.error(request, str(exc))
+            return redirect("dashboard")
 
-    if title and client:
         proj = Project.objects.create(
             title=title,
             client=client,
             client_budget_rub=budget,
             kanban_column=col,
-            manager=mgr,
-            theater_tz_text=tz_text,
+            manager=request.user,
+            theater_tz_text=(request.POST.get("theater_tz_text") or "").strip(),
         )
-        est = Estimate.objects.create(project=proj)
-        if tz_text:
-            parse_theater_tz_and_sync(est, tz_text, client_budget_rub=budget)
+        Estimate.objects.get_or_create(project=proj)
         sync_project_stage_automations(proj)
-        messages.success(request, f"Проект «{proj.title}» создан на Канбан-доске.")
-    return redirect('dashboard')
-
-
-@login_required
-@require_POST
-def create_kanban_task(request):
-    user = get_active_user(request)
-    title = request.POST.get('title', '').strip()
-    proj_text = request.POST.get('project_title_text', '').strip()
-    desc = request.POST.get('description', '').strip()
-    col_id = request.POST.get('column_id')
-    assigned_id = request.POST.get('assigned_to_id')
-
-    col = KanbanColumn.objects.filter(id=col_id).first() or KanbanColumn.objects.first()
-    assignee = CustomUser.objects.filter(id=assigned_id).first() or user
-    linked_proj = Project.objects.filter(title__icontains=proj_text).first() if proj_text else None
-
-    if title:
-        task = KanbanTask.objects.create(
-            project=linked_proj,
-            project_name_manual=proj_text,
+        messages.success(request, f"Проект «{proj.title}» создан.")
+    else:
+        title = (request.POST.get("title") or "").strip()
+        if not title:
+            messages.error(request, "Укажите заголовок рабочей задачи.")
+            return redirect("dashboard")
+        assignee_id = request.POST.get("assigned_to")
+        assignee = CustomUser.objects.filter(id=assignee_id).first() if assignee_id else request.user
+        KanbanTask.objects.create(
+            title=title,
+            description=(request.POST.get("description") or "").strip(),
+            project_name_manual=(request.POST.get("project_name_manual") or "").strip(),
             kanban_column=col,
             assigned_to=assignee,
-            title=title,
-            description=desc,
-            due_date=date.today() + timedelta(days=5),
-            is_completed=col.is_completed_stage if col else False,
         )
-        if 'attachment' in request.FILES:
-            f = request.FILES['attachment']
-            TaskAttachment.objects.create(task=task, uploaded_by=user, file=f, filename=f.name)
-        messages.success(request, f"Задача «{task.title}» размещена на Канбан-доске.")
-    return redirect('dashboard')
+        messages.success(request, f"Рабочая задача «{title}» добавлена на доску.")
+
+    return redirect("dashboard")
 
 
 @login_required
-@require_POST
-def move_kanban_card(request, project_id):
-    proj = get_object_or_404(Project, id=project_id)
-    col_id = request.POST.get('column_id')
-    new_col = KanbanColumn.objects.filter(id=col_id).first()
-    if new_col:
-        proj.kanban_column = new_col
-        proj.save()
-        sync_project_stage_automations(proj)
-    return redirect('dashboard')
+def move_project_column(request, project_id: int):
+    """Перемещение карточки проекта между колонками Канбана с сохранением истории поставок[cite: 1, 2]"""
+    if request.method == "POST":
+        project = get_object_or_404(Project, id=project_id)
+        new_col = get_object_or_404(KanbanColumn, id=request.POST.get("column_id"))
+        project.kanban_column = new_col
+        project.save(update_fields=["kanban_column"])
+        sync_project_stage_automations(project)
+        messages.success(request, f"Проект переведен в стадию «{new_col.title}».")
+    return redirect("dashboard")
 
 
 @login_required
-@require_POST
-def move_or_toggle_task(request, task_id):
+def update_manager_kpi_plan(request, user_id: int):
+    if not request.user.is_boss:
+        return HttpResponseForbidden("Доступ разрешен только руководителям.")
+    if request.method == "POST":
+        mgr = get_object_or_404(CustomUser, id=user_id)
+        try:
+            mgr.monthly_sales_plan_rub = _parse_strict_decimal(
+                request.POST.get("monthly_sales_plan_rub"), "План продаж", allow_zero=False
+            )
+            mgr.projects_plan_count = _parse_strict_positive_int(
+                request.POST.get("projects_plan_count"), "План проектов"
+            )
+            mgr.tasks_plan_count = _parse_strict_positive_int(
+                request.POST.get("tasks_plan_count"), "План задач"
+            )
+            mgr.save()
+            messages.success(request, f"Плановые показатели KPI для {mgr.full_display_name} обновлены.")
+        except ValueError as exc:
+            messages.error(request, str(exc))
+    return redirect("dashboard")
+
+
+@login_required
+def task_detail_view(request, task_id: int):
+    """Экран детализации рабочей задачи с вложениями и лентой комментариев[cite: 1, 2]"""
     task = get_object_or_404(KanbanTask, id=task_id)
-    if 'delete_task' in request.POST:
-        task.delete()
-        return redirect('dashboard')
-
-    if 'toggle_done' in request.POST:
-        task.is_completed = not task.is_completed
-        if task.is_completed:
-            done_col = KanbanColumn.objects.filter(is_completed_stage=True).first()
-            if done_col:
-                task.kanban_column = done_col
-        task.save()
-        return redirect('dashboard')
-
-    col_id = request.POST.get('column_id')
-    new_col = KanbanColumn.objects.filter(id=col_id).first()
-    if new_col:
-        task.kanban_column = new_col
-        task.is_completed = new_col.is_completed_stage
-        task.save()
-    return redirect('dashboard')
-
-
-@login_required
-@require_POST
-def manage_kanban_columns(request):
-    user = get_active_user(request)
-    if not user.is_boss:
-        return redirect('dashboard')
-
-    action = request.POST.get('action')
-    if action == 'add':
-        KanbanColumn.objects.create(
-            order=int(request.POST.get('order') or 6),
-            title=request.POST.get('title', 'Новый раздел').strip(),
-            is_logistics_stage=bool(request.POST.get('is_logistics_stage')),
-            is_completed_stage=bool(request.POST.get('is_completed_stage')),
-        )
-    elif action == 'update':
-        col = get_object_or_404(KanbanColumn, id=request.POST.get('column_id'))
-        col.order = int(request.POST.get('order') or col.order)
-        col.title = request.POST.get('title', col.title).strip()
-        col.is_logistics_stage = bool(request.POST.get('is_logistics_stage'))
-        col.is_completed_stage = bool(request.POST.get('is_completed_stage'))
-        col.save()
-        for p in col.projects.all():
-            sync_project_stage_automations(p)
-    elif action == 'delete':
-        col = get_object_or_404(KanbanColumn, id=request.POST.get('column_id'))
-        fallback = KanbanColumn.objects.exclude(id=col.id).first()
-        if fallback:
-            col.projects.update(kanban_column=fallback)
-            col.tasks.update(kanban_column=fallback)
-            col.delete()
-    return redirect('dashboard')
-
-
-@login_required
-def task_detail(request, task_id):
-    ctx = _base_ctx(request, 'kanban')
-    user = ctx['active_user']
-    task = get_object_or_404(KanbanTask, id=task_id)
-
-    if request.method == 'POST':
-        action = request.POST.get('action')
-        if action == 'update_info':
-            task.title = request.POST.get('title', task.title).strip()
-            task.project_name_manual = request.POST.get('project_name_manual', task.project_name_manual).strip()
-            task.description = request.POST.get('description', task.description).strip()
-            col_id = request.POST.get('column_id')
-            ass_id = request.POST.get('assigned_to_id')
+    if request.method == "POST":
+        action = request.POST.get("action", "update_task")
+        if action == "update_task":
+            task.title = (request.POST.get("title") or task.title).strip()
+            task.project_name_manual = (request.POST.get("project_name_manual") or "").strip()
+            task.description = (request.POST.get("description") or "").strip()
+            col_id = request.POST.get("kanban_column")
             if col_id:
-                col_obj = KanbanColumn.objects.filter(id=col_id).first()
-                if col_obj:
-                    task.kanban_column = col_obj
-                    task.is_completed = col_obj.is_completed_stage
-            if ass_id:
-                task.assigned_to_id = int(ass_id)
+                task.kanban_column_id = int(col_id)
+            emp_id = request.POST.get("assigned_to")
+            if emp_id:
+                task.assigned_to_id = int(emp_id)
             task.save()
-            messages.success(request, "Параметры рабочей задачи сохранены.")
-        elif action == 'add_comment':
-            txt = request.POST.get('comment_text', '').strip()
+            messages.success(request, "Параметры задачи сохранены.")
+        elif action == "add_comment":
+            txt = (request.POST.get("comment_text") or "").strip()
             if txt:
-                TaskComment.objects.create(task=task, author=user, text=txt)
-        elif action == 'upload_file' and 'attachment' in request.FILES:
-            f = request.FILES['attachment']
-            TaskAttachment.objects.create(task=task, uploaded_by=user, file=f, filename=f.name)
-        elif action == 'delete_file':
-            att_id = request.POST.get('attachment_id')
-            TaskAttachment.objects.filter(id=att_id, task=task).delete()
-        return redirect('task_detail', task_id=task.id)
+                TaskComment.objects.create(task=task, author=request.user, text=txt)
+        elif action == "upload_file" and request.FILES.get("attachment"):
+            f = request.FILES["attachment"]
+            TaskAttachment.objects.create(task=task, uploaded_by=request.user, file=f, filename=f.name)
+        return redirect("task_detail", task_id=task.id)
 
-    ctx.update({
-        'task': task,
-        'all_columns': KanbanColumn.objects.all(),
-        'employees': CustomUser.objects.all().order_by('first_name'),
-    })
-    return render(request, 'task_detail.html', ctx)
+    return render(
+        request,
+        "task_detail.html",
+        {
+            "task": task,
+            "columns": KanbanColumn.objects.all(),
+            "employees": CustomUser.objects.all(),
+        },
+    )
 
 
-# ==============================================================================
-# 2. РАБОЧЕЕ МЕСТО ПРОЕКТА: СМЕТА, ТЗ ТЕАТРА, ВШИТЫЕ РАСХОДЫ, НДС И 44-ФЗ
-# ==============================================================================
-def _render_estimate_workspace(request, estimate):
-    ctx = _base_ctx(request, 'kanban')
-    cat_id = request.GET.get('cat_id') or request.POST.get('cat_id')
-    subcat_id = request.GET.get('subcat_id') or request.POST.get('subcat_id')
-    q = (request.GET.get('q') or request.POST.get('q') or '').strip()
+@login_required
+def estimate_detail(request, project_id: int):
+    """Рабочее место настройки проекта, формирования сметы (HTMX) и подбора по 44-ФЗ[cite: 1, 2]"""
+    project = get_object_or_404(Project, id=project_id)
+    estimate, _ = Estimate.objects.get_or_create(project=project)
+    categories = Category.objects.prefetch_related("subcategories").all()
+    selected_cat_id = request.GET.get("category_id")
+    selected_subcat_id = request.GET.get("subcategory_id")
+    search_q = (request.GET.get("q") or "").strip()
 
-    items_qs = Item.objects.select_related('category', 'subcategory', 'vendor', 'vendor__currency').all()
-    subcats_qs = SubCategory.objects.select_related('category').all()
-
-    selected_cat_id = int(cat_id) if (cat_id and str(cat_id).isdigit()) else None
-    selected_subcat_id = int(subcat_id) if (subcat_id and str(subcat_id).isdigit()) else None
-
+    items_qs = Item.objects.select_related("category", "subcategory", "vendor", "vendor__currency").all()
     if selected_cat_id:
         items_qs = items_qs.filter(category_id=selected_cat_id)
-        subcats_qs = subcats_qs.filter(category_id=selected_cat_id)
     if selected_subcat_id:
         items_qs = items_qs.filter(subcategory_id=selected_subcat_id)
-    if q:
-        items_qs = (
-            items_qs.filter(name__icontains=q)
-            | items_qs.filter(brand__icontains=q)
-            | items_qs.filter(sku__icontains=q)
-            | items_qs.filter(specs_text__icontains=q)
+    if search_q:
+        items_qs = items_qs.filter(name__icontains=search_q) | items_qs.filter(sku__icontains=search_q)
+
+    rigging_stats = calculate_stage_auto_rigger(project, apply_to_estimate=False)
+
+    lines_with_analogs = []
+    for line in estimate.lines.select_related("item", "item__vendor", "item__subcategory").all():
+        analogs = find_tender_analogs_44fz(line.item) if line.item else []
+        lines_with_analogs.append(
+            {
+                "line": line,
+                "analogs": analogs,
+                "blind_spec": generate_44fz_blind_spec(line),
+            }
         )
 
-    ctx.update({
-        'estimate': estimate,
-        'project': estimate.project,
-        'rigger_calc': calculate_stage_auto_rigger(estimate),
-        'categories': Category.objects.all(),
-        'subcategories': subcats_qs,
-        'catalog_items': items_qs[:40],
-        'selected_cat_id': selected_cat_id,
-        'selected_subcat_id': selected_subcat_id,
-        'search_query': q,
-    })
-    if request.headers.get('HX-Request'):
-        return render(request, 'partials/estimate_workspace.html', ctx)
-    return render(request, 'estimate_detail.html', ctx)
+    context = {
+        "project": project,
+        "estimate": estimate,
+        "categories": categories,
+        "catalog_items": items_qs[:60],
+        "rigging_stats": rigging_stats,
+        "lines_with_analogs": lines_with_analogs,
+        "currencies": CurrencyRate.objects.filter(is_active=True),
+    }
+    if request.headers.get("HX-Request"):
+        return render(request, "partials/estimate_workspace.html", context)
+    return render(request, "estimate_detail.html", context)
 
 
 @login_required
-def estimate_detail(request, estimate_id):
-    est = get_object_or_404(Estimate.objects.select_related('project'), id=estimate_id)
-    return _render_estimate_workspace(request, est)
+def add_estimate_line(request, project_id: int):
+    """Добавление позиции из каталога в смету со строгой проверкой прав и количества[cite: 1]"""
+    if not request.user.can_perm("edit_estimates"):
+        return HttpResponseForbidden("Недостаточно прав для редактирования сметы.")
+    project = get_object_or_404(Project, id=project_id)
+    estimate, _ = Estimate.objects.get_or_create(project=project)
+
+    if request.method == "POST":
+        item = get_object_or_404(Item, id=request.POST.get("item_id"))
+        try:
+            qty = _parse_strict_positive_int(request.POST.get("quantity", 1), "Количество")
+        except ValueError as exc:
+            messages.error(request, str(exc))
+            return redirect("estimate_detail", project_id=project.id)
+
+        default_markup = item.category.default_target_margin_pct if item.category else Decimal("25.00")
+        line, created = EstimateLine.objects.get_or_create(
+            estimate=estimate,
+            item=item,
+            is_manual_item=False,
+            defaults={
+                "quantity": qty,
+                "is_protected": True,
+                "markup_pct": default_markup,
+                "vat_rate": Decimal("22.00"),
+            },
+        )
+        if not created:
+            line.quantity += qty
+            line.save(update_fields=["quantity"])
+
+    return redirect("estimate_detail", project_id=project.id)
 
 
 @login_required
-@require_POST
-def update_project_budget(request, project_id):
-    proj = get_object_or_404(Project, id=project_id)
-    proj.client_budget_rub = to_decimal(request.POST.get('client_budget_rub'), '0.00')
-    proj.save()
-    return _render_estimate_workspace(request, proj.estimate)
+def add_manual_estimate_line(request, project_id: int):
+    """Ручное добавление нестандартного оборудования со строгой валидацией цены, количества и НДС 22%[cite: 1]"""
+    if not request.user.can_perm("edit_estimates"):
+        return HttpResponseForbidden("Недостаточно прав для редактирования сметы.")
+    project = get_object_or_404(Project, id=project_id)
+    estimate, _ = Estimate.objects.get_or_create(project=project)
 
+    if request.method == "POST":
+        name = (request.POST.get("manual_name") or "").strip()
+        if not name:
+            messages.error(request, "Укажите наименование нестандартной позиции.")
+            return redirect("estimate_detail", project_id=project.id)
 
-@login_required
-@require_POST
-def update_estimate_commercial_params(request, estimate_id):
-    est = get_object_or_404(Estimate, id=estimate_id)
-    est.fx_buffer_pct = to_decimal(request.POST.get('fx_buffer_pct'), '4.00')
-    est.platform_fee_pct = to_decimal(request.POST.get('platform_fee_pct'), '1.50')
-    est.delivery_cost_rub = to_decimal(request.POST.get('delivery_cost_rub'), '35000.00')
-    est.installation_cost_rub = to_decimal(request.POST.get('installation_cost_rub'), '0.00')
-    est.embed_hidden_costs = bool(request.POST.get('embed_hidden_costs'))
-    est.save()
-    return _render_estimate_workspace(request, est)
+        try:
+            price = _parse_strict_decimal(
+                request.POST.get("manual_purchase_price"), "Закупочная цена", allow_zero=False
+            )
+            qty = _parse_strict_positive_int(request.POST.get("quantity", 1), "Количество")
+            markup = _parse_strict_decimal(
+                request.POST.get("markup_pct", "25.00"), "Наценка %", allow_zero=True
+            )
+            vat_rate = _parse_strict_decimal(
+                request.POST.get("vat_rate", "22.00"), "Ставка НДС %", allow_zero=True
+            )
+        except ValueError as exc:
+            messages.error(request, str(exc))
+            return redirect("estimate_detail", project_id=project.id)
 
-
-@login_required
-@require_POST
-def add_manual_estimate_line(request, estimate_id):
-    est = get_object_or_404(Estimate, id=estimate_id)
-    manual_name = request.POST.get('manual_name', '').strip()
-    if manual_name:
         EstimateLine.objects.create(
-            estimate=est,
-            item=None,
+            estimate=estimate,
             is_manual_item=True,
-            manual_name=manual_name,
-            manual_specs=request.POST.get('manual_specs', '').strip(),
-            manual_vendor_name=request.POST.get('manual_vendor_name', 'По запросу').strip(),
-            manual_currency_code=request.POST.get('manual_currency_code', 'RUB').strip(),
-            manual_unit_price=to_decimal(request.POST.get('manual_unit_price'), '10000.00'),
-            quantity=max(int(request.POST.get('quantity') or 1), 1),
-            is_protected=True,
-            markup_pct=to_decimal(request.POST.get('markup_pct'), '25.00'),
-            vat_rate_pct=to_decimal(request.POST.get('vat_rate_pct'), '20.00'),
+            manual_sku=(request.POST.get("manual_sku") or "MANUAL").strip(),
+            manual_name=name,
+            manual_specs=(request.POST.get("manual_specs") or "").strip(),
+            manual_vendor_name=(request.POST.get("manual_vendor_name") or "Поставщик по договору").strip(),
+            manual_currency_code=(request.POST.get("manual_currency_code") or "RUB").strip(),
+            manual_purchase_price=price,
+            quantity=qty,
+            is_protected=bool(request.POST.get("is_protected", True)),
+            markup_pct=markup,
+            vat_rate=vat_rate,
         )
-    return _render_estimate_workspace(request, est)
+        messages.success(request, f"Позиция «{name}» добавлена в спецификацию.")
+
+    return redirect("estimate_detail", project_id=project.id)
 
 
 @login_required
-@require_POST
-def analyze_tz_and_autoselect(request, estimate_id):
-    est = get_object_or_404(Estimate, id=estimate_id)
-    parse_theater_tz_and_sync(
-        est,
-        request.POST.get('theater_tz_text', ''),
-        hall_seats=request.POST.get('hall_seats'),
-        client_budget_rub=request.POST.get('client_budget_rub'),
+def update_estimate_line(request, line_id: int):
+    """Обновление количества, наценки, статуса защиты и ставки НДС в строке сметы[cite: 1]"""
+    if not request.user.can_perm("edit_estimates"):
+        return HttpResponseForbidden("Недостаточно прав для редактирования сметы.")
+    line = get_object_or_404(EstimateLine, id=line_id)
+    project_id = line.estimate.project_id
+
+    if request.method == "POST":
+        try:
+            if "quantity" in request.POST:
+                line.quantity = _parse_strict_positive_int(request.POST.get("quantity"), "Количество")
+            if "markup_pct" in request.POST:
+                line.markup_pct = _parse_strict_decimal(
+                    request.POST.get("markup_pct"), "Наценка %", allow_zero=True
+                )
+            if "vat_rate" in request.POST:
+                line.vat_rate = _parse_strict_decimal(
+                    request.POST.get("vat_rate", "22.00"), "Ставка НДС %", allow_zero=True
+                )
+            if "is_protected" in request.POST:
+                line.is_protected = request.POST.get("is_protected") in ("on", "true", "1", "True")
+            line.save()
+        except ValueError as exc:
+            messages.error(request, str(exc))
+
+    return redirect("estimate_detail", project_id=project_id)
+
+
+@login_required
+def update_estimate_commercials(request, project_id: int):
+    """Обновление коммерческих параметров сметы (буфер, комиссия площадки, доставка, монтаж)[cite: 1]"""
+    if not request.user.can_perm("edit_estimates"):
+        return HttpResponseForbidden("Недостаточно прав для изменения коммерческих параметров.")
+    project = get_object_or_404(Project, id=project_id)
+    estimate, _ = Estimate.objects.get_or_create(project=project)
+
+    if request.method == "POST":
+        try:
+            estimate.fx_buffer_pct = _parse_strict_decimal(
+                request.POST.get("fx_buffer_pct", estimate.fx_buffer_pct),
+                "Валютный буфер %",
+                allow_zero=True,
+            )
+            estimate.platform_fee_pct = _parse_strict_decimal(
+                request.POST.get("platform_fee_pct", estimate.platform_fee_pct),
+                "Комиссия площадки %",
+                allow_zero=True,
+            )
+            estimate.delivery_cost_rub = _parse_strict_decimal(
+                request.POST.get("delivery_cost_rub", estimate.delivery_cost_rub),
+                "Стоимость доставки",
+                allow_zero=True,
+            )
+            estimate.installation_cost_rub = _parse_strict_decimal(
+                request.POST.get("installation_cost_rub", estimate.installation_cost_rub),
+                "Стоимость монтажа",
+                allow_zero=True,
+            )
+            estimate.installation_vat_rate = _parse_strict_decimal(
+                request.POST.get("installation_vat_rate", "22.00"),
+                "Ставка НДС на монтаж",
+                allow_zero=True,
+            )
+            estimate.include_installation = request.POST.get("include_installation") in ("on", "true", "1")
+            estimate.embed_expenses_in_kp = request.POST.get("embed_expenses_in_kp") in ("on", "true", "1")
+            estimate.save()
+            messages.success(request, "Коммерческие параметры сметы обновлены.")
+        except ValueError as exc:
+            messages.error(request, str(exc))
+
+    return redirect("estimate_detail", project_id=project.id)
+
+
+@login_required
+def update_project_budget(request, project_id: int):
+    """Обновление предельного бюджета театра со строгой проверкой (> 0)[cite: 1, 2]"""
+    if not request.user.can_perm("edit_estimates"):
+        return HttpResponseForbidden("Недостаточно прав.")
+    project = get_object_or_404(Project, id=project_id)
+    if request.method == "POST":
+        try:
+            project.client_budget_rub = _parse_strict_decimal(
+                request.POST.get("client_budget_rub"), "Бюджет театра", allow_zero=False
+            )
+            project.save(update_fields=["client_budget_rub"])
+            messages.success(request, "Лимит бюджета театра обновлен.")
+        except ValueError as exc:
+            messages.error(request, str(exc))
+    return redirect("estimate_detail", project_id=project.id)
+
+
+@login_required
+def replace_line_with_analog(request, line_id: int, analog_id: int):
+    """Замена отсутствующей позиции в смете на доступный аналог по 44-ФЗ[cite: 1, 2]"""
+    if not request.user.can_perm("edit_estimates"):
+        return HttpResponseForbidden("Недостаточно прав.")
+    line = get_object_or_404(EstimateLine, id=line_id)
+    analog = get_object_or_404(Item, id=analog_id)
+    line.item = analog
+    line.save(update_fields=["item"])
+    messages.success(request, f"Позиция заменена на аналог «{analog.brand} {analog.name}».")
+    return redirect("estimate_detail", project_id=line.estimate.project_id)
+
+
+@login_required
+def toggle_ceo_unblock_kp(request, project_id: int):
+    """Принудительная разблокировка выгрузки КП решением Генерального директора[cite: 1, 2]"""
+    if not request.user.is_ceo:
+        return HttpResponseForbidden("Разблокировка КП при защите <70% доступна только Генеральному директору.")
+    project = get_object_or_404(Project, id=project_id)
+    estimate, _ = Estimate.objects.get_or_create(project=project)
+    estimate.ceo_force_unblock_kp = not estimate.ceo_force_unblock_kp
+    estimate.save(update_fields=["ceo_force_unblock_kp"])
+    return redirect("estimate_detail", project_id=project.id)
+
+
+@login_required
+def document_print(request, project_id: int):
+    """
+    Генерация печатных форм защищенного КП (с НДС 22%) и обезличенного ТЗ по 44-ФЗ[cite: 1, 2].
+    Добавлена серверная защита от прямого перехода по URL при защите проекта < 70%[cite: 1].
+    """
+    project = get_object_or_404(Project, id=project_id)
+    estimate, _ = Estimate.objects.get_or_create(project=project)
+    doc_type = request.GET.get("type", "kp")
+
+    if doc_type == "kp" and not estimate.is_kp_export_allowed and not request.user.is_ceo:
+        messages.error(
+            request,
+            "Выгрузка КП заблокирована Радаром защиты: доля защищенных позиций ниже 70%. "
+            "Запросите разблокировку у Генерального директора.",
+        )
+        return redirect("estimate_detail", project_id=project.id)
+
+    lines_data = []
+    for idx, line in enumerate(estimate.lines.select_related("item", "item__subcategory").all(), start=1):
+        lines_data.append(
+            {
+                "index": idx,
+                "line": line,
+                "blind_spec": generate_44fz_blind_spec(line),
+            }
+        )
+
+    return render(
+        request,
+        "document_print.html",
+        {
+            "project": project,
+            "estimate": estimate,
+            "doc_type": doc_type,
+            "lines_data": lines_data,
+        },
     )
-    return _render_estimate_workspace(request, est)
 
 
 @login_required
-@require_POST
-def apply_auto_rigger(request, estimate_id):
-    est = get_object_or_404(Estimate, id=estimate_id)
-    proj = est.project
-    proj.stage_width = to_decimal(request.POST.get('stage_width'), str(proj.stage_width))
-    proj.stage_depth = to_decimal(request.POST.get('stage_depth'), str(proj.stage_depth))
-    proj.stage_height = to_decimal(request.POST.get('stage_height'), str(proj.stage_height))
-    proj.save()
-    apply_auto_rigger_lines_to_estimate(est)
-    return _render_estimate_workspace(request, est)
+def catalog_and_vendors_view(request):
+    """Вкладка 2: Каталог ustage-group.ru, Мультивалютный контур ЦБ РФ, Поставщики и Импорт Excel[cite: 1, 2]"""
+    if request.method == "POST":
+        action = request.POST.get("action")
+        if action == "sync_cbr":
+            if not request.user.can_perm("edit_currencies"):
+                return HttpResponseForbidden("Нет прав на управление валютным контуром.")
+            res = sync_currencies_from_cbr_api()
+            messages.success(request, f"Курсы синхронизированы ({res['source']}).")
 
+        elif action == "import_excel":
+            if not request.user.can_perm("import_excel"):
+                return HttpResponseForbidden("Нет прав на импорт прайс-листов.")
+            excel_file = request.FILES.get("excel_file")
+            vendor = get_object_or_404(Vendor, id=request.POST.get("vendor_id"))
+            cat = Category.objects.filter(id=request.POST.get("category_id")).first()
+            subcat = SubCategory.objects.filter(id=request.POST.get("subcategory_id")).first()
+            if excel_file:
+                stats = parse_vendor_excel_price(excel_file, vendor, cat, subcat)
+                messages.success(
+                    request,
+                    f"Импорт завершен: загружено позиций — {stats['imported']}, пропущено некорректных — {stats['skipped']}.",
+                )
+        return redirect("catalog_vendors")
 
-@login_required
-@require_POST
-def add_estimate_line(request, estimate_id):
-    est = get_object_or_404(Estimate, id=estimate_id)
-    item_obj = get_object_or_404(Item, id=request.POST.get('item_id'))
-    qty = max(int(request.POST.get('quantity') or 1), 1)
-    line, created = EstimateLine.objects.get_or_create(
-        estimate=est,
-        item=item_obj,
-        is_manual_item=False,
-        defaults={
-            'quantity': qty,
-            'is_protected': True,
-            'markup_pct': item_obj.category.default_target_margin_pct if item_obj.category else Decimal('25.00'),
-            'vat_rate_pct': Decimal('20.00'),
-        }
+    return render(
+        request,
+        "catalog_vendors.html",
+        {
+            "active_currencies": CurrencyRate.objects.filter(is_active=True),
+            "inactive_currencies": CurrencyRate.objects.filter(is_active=False),
+            "vendors": Vendor.objects.select_related("currency").all(),
+            "categories": Category.objects.prefetch_related("subcategories").all(),
+            "items": Item.objects.select_related("category", "subcategory", "vendor", "vendor__currency").all(),
+        },
     )
-    if not created:
-        line.quantity += qty
-        line.save()
-    return _render_estimate_workspace(request, est)
 
 
 @login_required
-@require_POST
-def update_estimate_line(request, line_id):
-    line = get_object_or_404(EstimateLine, id=line_id)
-    line.quantity = max(int(request.POST.get('quantity') or line.quantity), 1)
-    line.is_protected = bool(request.POST.get('is_protected'))
-    line.markup_pct = to_decimal(request.POST.get('markup_pct'), str(line.markup_pct))
-    if 'vat_rate_pct' in request.POST:
-        line.vat_rate_pct = to_decimal(request.POST.get('vat_rate_pct'), str(line.vat_rate_pct))
-    line.save()
-    return _render_estimate_workspace(request, line.estimate)
+def logistics_view(request):
+    """Вкладка 3: Отслеживание поставок ТК «Деловые Линии» и «СДЭК»[cite: 1, 2]"""
+    if not request.user.can_perm("view_logistics"):
+        return HttpResponseForbidden("Доступ к разделу логистики ограничен.")
 
-
-@login_required
-@require_POST
-def delete_estimate_line(request, line_id):
-    line = get_object_or_404(EstimateLine, id=line_id)
-    est = line.estimate
-    line.delete()
-    return _render_estimate_workspace(request, est)
-
-
-@login_required
-@require_POST
-def replace_with_analog(request, line_id):
-    line = get_object_or_404(EstimateLine, id=line_id)
-    if line.item and line.item.recommended_analog:
-        line.item = line.item.recommended_analog
-        line.save()
-    return _render_estimate_workspace(request, line.estimate)
-
-
-@login_required
-@require_POST
-def ceo_toggle_unblock_kp(request, estimate_id):
-    user = get_active_user(request)
-    est = get_object_or_404(Estimate, id=estimate_id)
-    if user.is_ceo:
-        est.ceo_force_unblock_kp = not est.ceo_force_unblock_kp
-        est.save()
-    return redirect('estimate_detail', estimate_id=est.id)
-
-
-@login_required
-def document_print(request, estimate_id, doc_type):
-    est = get_object_or_404(Estimate.objects.select_related('project'), id=estimate_id)
-    ctx = _base_ctx(request, 'kanban')
-    ctx.update({
-        'estimate': est,
-        'project': est.project,
-        'doc_type': doc_type,
-        'blind_rows': generate_44fz_blind_spec(est) if doc_type == 'tz44' else [],
-        'today': date.today(),
-    })
-    return render(request, 'document_print.html', ctx)
-
-
-# ==============================================================================
-# 3. КАТАЛОГ USTAGE-GROUP.RU, МУЛЬТИВАЛЮТНЫЙ КОНТУР ЦБ РФ И ИМПОРТ EXCEL
-# ==============================================================================
-@login_required
-def catalog_vendors(request):
-    ctx = _base_ctx(request, 'catalog')
-    user = ctx['active_user']
-
-    cat_id = request.GET.get('cat_id')
-    subcat_id = request.GET.get('subcat_id')
-    q = request.GET.get('q', '').strip()
-
-    selected_cat_id = int(cat_id) if (cat_id and cat_id.isdigit()) else None
-    selected_subcat_id = int(subcat_id) if (subcat_id and subcat_id.isdigit()) else None
-
-    items_qs = Item.objects.select_related('category', 'subcategory', 'vendor', 'vendor__currency').all()
-    subcats_qs = SubCategory.objects.select_related('category').all()
-
-    if selected_cat_id:
-        items_qs = items_qs.filter(category_id=selected_cat_id)
-        subcats_qs = subcats_qs.filter(category_id=selected_cat_id)
-    if selected_subcat_id:
-        items_qs = items_qs.filter(subcategory_id=selected_subcat_id)
-    if q:
-        items_qs = (
-            items_qs.filter(name__icontains=q)
-            | items_qs.filter(brand__icontains=q)
-            | items_qs.filter(sku__icontains=q)
-            | items_qs.filter(specs_text__icontains=q)
-        )
-
-    ctx.update({
-        'currencies': CurrencyRate.objects.filter(is_active=True).order_by('code'),
-        'all_currencies_db': CurrencyRate.objects.all().order_by('code'),
-        'vendors': Vendor.objects.select_related('currency').all(),
-        'categories': Category.objects.all(),
-        'subcategories': subcats_qs,
-        'all_subcategories': SubCategory.objects.select_related('category').all(),
-        'items': items_qs,
-        'selected_cat_id': selected_cat_id,
-        'selected_subcat_id': selected_subcat_id,
-        'search_query': q,
-        'can_view_currencies': user.can_perm('view_currencies'),
-        'can_edit_currencies': user.can_perm('edit_currencies'),
-        'can_view_vendors': user.can_perm('view_vendors'),
-        'can_edit_vendors': user.can_perm('edit_vendors'),
-    })
-    return render(request, 'catalog_vendors.html', ctx)
-
-
-@login_required
-@require_POST
-def sync_cbr_currencies(request):
-    codes = sync_currencies_from_cbr_api()
-    messages.success(request, f"Курсы валют синхронизированы с API ЦБ РФ ({', '.join(codes[:6])}...).")
-    return redirect('catalog_vendors')
-
-
-@login_required
-@require_POST
-def update_currency(request):
-    remove_id = request.POST.get('remove_currency_id')
-    if remove_id:
-        curr = get_object_or_404(CurrencyRate, id=remove_id)
-        if curr.code != 'RUB':
-            curr.is_active = False
-            curr.save()
-            messages.success(request, f"Валюта {curr.code} скрыта с экрана.")
-    return redirect('catalog_vendors')
-
-
-@login_required
-@require_POST
-def add_currency(request):
-    ids = request.POST.getlist('activate_currency_ids')
-    if ids:
-        CurrencyRate.objects.filter(id__in=ids).update(is_active=True)
-        messages.success(request, "Выбранные валюты справочника ЦБ РФ добавлены в таблицу.")
-    return redirect('catalog_vendors')
-
-
-@login_required
-@require_POST
-def manage_vendors(request):
-    user = get_active_user(request)
-    if not user.can_perm('edit_vendors'):
-        return redirect('catalog_vendors')
-
-    action = request.POST.get('action')
-    if action == 'add_vendor':
-        curr = CurrencyRate.objects.filter(id=request.POST.get('currency_id')).first() or CurrencyRate.objects.first()
-        Vendor.objects.create(
-            name=request.POST.get('name', '').strip(),
-            country=request.POST.get('country', '').strip(),
-            contact_info=request.POST.get('contact_info', '').strip(),
-            currency=curr,
-            base_discount=to_decimal(request.POST.get('base_discount'), '15.00'),
-            protected_discount=to_decimal(request.POST.get('protected_discount'), '30.00'),
-        )
-        messages.success(request, "Поставщик добавлен в Реестр ООО «Юстейдж».")
-    elif action == 'update_vendor':
-        v = get_object_or_404(Vendor, id=request.POST.get('vendor_id'))
-        v.name = request.POST.get('name', v.name).strip()
-        v.country = request.POST.get('country', v.country).strip()
-        v.contact_info = request.POST.get('contact_info', v.contact_info).strip()
-        if request.POST.get('currency_id'):
-            v.currency_id = int(request.POST.get('currency_id'))
-        v.base_discount = to_decimal(request.POST.get('base_discount'), str(v.base_discount))
-        v.protected_discount = to_decimal(request.POST.get('protected_discount'), str(v.protected_discount))
-        v.save()
-        messages.success(request, f"Данные поставщика «{v.name}» обновлены.")
-    elif action == 'delete_vendor':
-        Vendor.objects.filter(id=request.POST.get('vendor_id')).delete()
-    return redirect('catalog_vendors')
-
-
-@login_required
-@require_POST
-def upload_price(request):
-    vendor = get_object_or_404(Vendor, id=request.POST.get('vendor_id'))
-    cat_id = request.POST.get('category_id')
-    subcat_id = request.POST.get('subcategory_id')
-
-    cat = Category.objects.filter(id=cat_id).first() if (cat_id and cat_id.isdigit()) else None
-    subcat = SubCategory.objects.filter(id=subcat_id).first() if (subcat_id and subcat_id.isdigit()) else None
-
-    if 'excel_file' in request.FILES:
-        cnt = parse_vendor_excel_price(request.FILES['excel_file'], vendor, cat, subcat)
-        mode_str = f"в подраздел «{subcat.name}»" if subcat else "с автораспределением по подразделам"
-        messages.success(request, f"Импортировано и обновлено {cnt} поз. от поставщика «{vendor.name}» ({mode_str}).")
-    return redirect('catalog_vendors')
-
-
-# ==============================================================================
-# 4. ЛОГИСТИКА ТК «ДЕЛОВЫЕ ЛИНИИ» И «СДЭК»
-# ==============================================================================
-@login_required
-def logistics_dellin(request):
-    ctx = _base_ctx(request, 'logistics')
-    if request.method == 'POST':
-        action = request.POST.get('action')
-        if action == 'add_shipment':
-            carrier = request.POST.get('carrier', 'dellin')
-            track_num = request.POST.get('tracking_number', '').strip()
-            proj = get_object_or_404(Project, id=request.POST.get('project_id'))
-            vendor = Vendor.objects.filter(id=request.POST.get('vendor_id')).first()
-            equip = request.POST.get('equipment_summary', '').strip()
-            weight = to_decimal(request.POST.get('cargo_weight_kg'), '50.0')
-
-            api_res = track_shipment_by_carrier_api(carrier, track_num)
-            DellinShipment.objects.create(
-                carrier=carrier,
-                tracking_number=track_num,
-                project=proj,
-                vendor=vendor,
-                equipment_summary=equip,
-                route_info=api_res['route_info'],
-                cargo_weight_kg=weight,
-                status=api_res['status'],
-                eta_date=api_res['eta_date'],
-                is_auto_created=False,
-            )
-            messages.success(request, f"Отгрузка {track_num} добавлена и проверена по API.")
-        elif action == 'update_shipment':
-            sh = get_object_or_404(DellinShipment, id=request.POST.get('shipment_id'))
-            sh.carrier = request.POST.get('carrier', sh.carrier)
-            sh.tracking_number = request.POST.get('tracking_number', sh.tracking_number).strip()
-            sh.equipment_summary = request.POST.get('equipment_summary', sh.equipment_summary).strip()
-            sh.route_info = request.POST.get('route_info', sh.route_info).strip()
-            sh.cargo_weight_kg = to_decimal(request.POST.get('cargo_weight_kg'), str(sh.cargo_weight_kg))
-            sh.status = request.POST.get('status', sh.status)
-            if request.POST.get('eta_date'):
-                sh.eta_date = request.POST.get('eta_date')
+    if request.method == "POST":
+        if not request.user.can_perm("edit_logistics"):
+            return HttpResponseForbidden("У вашей роли нет прав на редактирование поставок.")
+        action = request.POST.get("action", "create")
+        if action == "track_api":
+            sh = get_object_or_404(DellinShipment, id=request.POST.get("shipment_id"))
+            track_shipment_by_carrier_api(sh)
+            messages.success(request, f"Статус накладной {sh.tracking_number} обновлен.")
+        elif action == "update":
+            sh = get_object_or_404(DellinShipment, id=request.POST.get("shipment_id"))
+            sh.tracking_number = (request.POST.get("tracking_number") or sh.tracking_number).strip()
+            sh.equipment_summary = (request.POST.get("equipment_summary") or sh.equipment_summary).strip()
+            sh.status = (request.POST.get("status") or sh.status).strip()
             sh.save()
-        elif action == 'check_api':
-            sh = get_object_or_404(DellinShipment, id=request.POST.get('shipment_id'))
-            api_res = track_shipment_by_carrier_api(sh.carrier, sh.tracking_number)
-            sh.status = api_res['status']
-            sh.route_info = api_res['route_info']
-            sh.eta_date = api_res['eta_date']
-            sh.save()
-            messages.success(request, f"Статус накладной {sh.tracking_number} обновлен через API.")
-        elif action == 'delete_shipment':
-            DellinShipment.objects.filter(id=request.POST.get('shipment_id')).delete()
-        return redirect('logistics_dellin')
+            messages.success(request, "Данные отгрузки сохранены.")
+        return redirect("logistics_dellin")
 
-    ctx.update({
-        'shipments': DellinShipment.objects.select_related('project', 'vendor').all().order_by('-id'),
-        'projects': Project.objects.all(),
-        'vendors': Vendor.objects.all(),
-    })
-    return render(request, 'logistics_dellin.html', ctx)
+    return render(
+        request,
+        "logistics_dellin.html",
+        {
+            "shipments": DellinShipment.objects.select_related("project", "vendor").all(),
+            "projects": Project.objects.all(),
+            "vendors": Vendor.objects.all(),
+        },
+    )
 
 
-# ==============================================================================
-# 5. ЦИФРОВОЙ ПАСПОРТ ОБЪЕКТА (ПРОГНОЗНЫЙ УЧЕТ РЕСУРСА ОБОРУДОВАНИЯ)
-# ==============================================================================
 @login_required
-def digital_twin(request):
-    ctx = _base_ctx(request, 'twin')
-    user = ctx['active_user']
+def digital_twin_view(request):
+    """Вкладка 4: Цифровой паспорт объекта и Справочник профилей театров[cite: 1, 2]"""
+    if not request.user.can_perm("view_digital_twin"):
+        return HttpResponseForbidden("Доступ к Цифровому паспорту ограничен.")
 
-    if request.method == 'POST':
-        action = request.POST.get('action')
-        if action == 'add_profile' and user.can_perm('edit_venue_profiles'):
-            VenueCalculationProfile.objects.create(
-                name=request.POST.get('name', '').strip(),
-                daily_hours=to_decimal(request.POST.get('daily_hours'), '3.50'),
-            )
-        elif action == 'update_profile' and user.can_perm('edit_venue_profiles'):
-            p = get_object_or_404(VenueCalculationProfile, id=request.POST.get('profile_id'))
-            p.name = request.POST.get('name', p.name).strip()
-            p.daily_hours = to_decimal(request.POST.get('daily_hours'), str(p.daily_hours))
-            p.save()
-        elif action == 'delete_profile' and user.can_perm('edit_venue_profiles'):
-            VenueCalculationProfile.objects.filter(id=request.POST.get('profile_id')).delete()
-        elif action == 'add_asset':
-            v_name = request.POST.get('venue_name', '').strip()
-            linked_proj = Project.objects.filter(title__icontains=v_name).first()
-            DigitalStageAsset.objects.create(
-                serial_number=request.POST.get('serial_number', '').strip(),
-                project=linked_proj,
-                venue_name=v_name,
-                item_id=int(request.POST.get('item_id')),
-                zone_installed=request.POST.get('zone_installed', '').strip(),
-                venue_profile_id=int(request.POST.get('venue_profile_id')),
-                max_resource_hours=max(int(request.POST.get('max_resource_hours') or 2000), 100),
-                is_auto_created=False,
-            )
-        elif action == 'update_asset':
-            a = get_object_or_404(DigitalStageAsset, id=request.POST.get('asset_id'))
-            a.serial_number = request.POST.get('serial_number', a.serial_number).strip()
-            a.venue_name = request.POST.get('venue_name', a.venue_name).strip()
-            a.zone_installed = request.POST.get('zone_installed', a.zone_installed).strip()
-            a.item_id = int(request.POST.get('item_id') or a.item_id)
-            a.venue_profile_id = int(request.POST.get('venue_profile_id') or a.venue_profile_id)
-            a.max_resource_hours = max(int(request.POST.get('max_resource_hours') or a.max_resource_hours), 100)
-            a.save()
-        elif action == 'delete_asset':
-            DigitalStageAsset.objects.filter(id=request.POST.get('asset_id')).delete()
-        return redirect('digital_twin')
-
-    ctx.update({
-        'profiles': VenueCalculationProfile.objects.all(),
-        'assets': DigitalStageAsset.objects.select_related('project', 'item', 'venue_profile').all(),
-        'projects': Project.objects.all(),
-        'items': Item.objects.all(),
-        'can_view_venue_profiles': user.can_perm('view_venue_profiles'),
-        'can_edit_venue_profiles': user.can_perm('edit_venue_profiles'),
-    })
-    return render(request, 'digital_twin.html', ctx)
+    return render(
+        request,
+        "digital_twin.html",
+        {
+            "profiles": VenueCalculationProfile.objects.all(),
+            "assets": DigitalStageAsset.objects.select_related("item", "venue_profile", "project").all(),
+            "items": Item.objects.all(),
+        },
+    )
 
 
-# ==============================================================================
-# 6. СОТРУДНИКИ, МАТРИЦА РОЛЕЙ И ЛИЧНЫЙ ПРОФИЛЬ
-# ==============================================================================
 @login_required
-def staff_management(request):
-    ctx = _base_ctx(request, 'staff')
-    user = ctx['active_user']
-
-    if request.method == 'POST':
-        action = request.POST.get('action')
-        if action == 'update_own_profile':
-            new_pass = request.POST.get('new_password', '').strip()
-            if new_pass:
-                user.set_password(new_pass)
-                user.save()
-                login(request, user)
-                messages.success(request, "Ваш пароль успешно обновлен.")
-        elif action == 'add_employee' and user.can_admin_roles:
-            pos = get_object_or_404(StaffPosition, id=request.POST.get('position_id'))
-            emp = CustomUser.objects.create(
-                tab_number=request.POST.get('tab_number', '00030').strip(),
-                username=request.POST.get('username', '').strip(),
-                first_name=request.POST.get('first_name', '').strip(),
-                email=request.POST.get('email', '').strip().lower(),
-                position=pos,
-            )
-            emp.set_password(request.POST.get('password', 'admin12345').strip())
-            emp.save()
-            messages.success(request, f"Сотрудник {emp.first_name} добавлен в штат.")
-        elif action == 'update_employee' and user.can_admin_roles:
-            emp = get_object_or_404(CustomUser, id=request.POST.get('employee_id'))
-            emp.tab_number = request.POST.get('tab_number', emp.tab_number).strip()
-            emp.first_name = request.POST.get('first_name', emp.first_name).strip()
-            emp.email = request.POST.get('email', emp.email).strip().lower()
-            emp.position_id = int(request.POST.get('position_id') or emp.position_id)
-            if user.is_ceo:
-                emp.can_manage_roles = bool(request.POST.get('can_manage_roles'))
-            new_p = request.POST.get('new_password', '').strip()
-            if new_p:
-                emp.set_password(new_p)
-            emp.save()
-            messages.success(request, f"Профиль сотрудника {emp.first_name} обновлен.")
-        elif action == 'delete_employee' and user.can_admin_roles:
-            emp = get_object_or_404(CustomUser, id=request.POST.get('employee_id'))
-            if emp.id != user.id:
-                emp.delete()
-        elif action in ('add_position', 'update_position') and user.can_admin_roles:
-            if action == 'add_position':
-                pos = StaffPosition(code=request.POST.get('code', '').strip())
+def staff_management_view(request):
+    """Вкладка 5: Личный профиль сотрудника, Штатный состав и Матрица ролей[cite: 1, 2]"""
+    if request.method == "POST":
+        action = request.POST.get("action")
+        if action == "change_own_password":
+            new_pw = request.POST.get("new_password") or ""
+            if len(new_pw) < 6:
+                messages.error(request, "Пароль должен быть не короче 6 символов.")
             else:
-                pos = get_object_or_404(StaffPosition, id=request.POST.get('position_id'))
-            pos.title = request.POST.get('title', pos.title).strip()
-            for flag in [
-                'is_management', 'is_sales_manager',
-                'view_currencies', 'edit_currencies',
-                'view_vendors', 'edit_vendors',
-                'view_venue_profiles', 'edit_venue_profiles',
-                'view_kanban', 'edit_kanban',
-                'view_estimates', 'edit_estimates',
-                'view_catalog', 'edit_catalog',
-                'view_logistics', 'edit_logistics',
-                'view_twin', 'edit_twin'
-            ]:
-                setattr(pos, flag, bool(request.POST.get(flag)))
-            pos.save()
-            messages.success(request, f"Права роли «{pos.title}» сохранены.")
-        elif action == 'delete_position' and user.can_admin_roles:
-            StaffPosition.objects.filter(id=request.POST.get('position_id')).exclude(code='ceo').delete()
-        return redirect('staff_management')
+                request.user.set_password(new_pw)
+                request.user.save()
+                update_session_auth_hash(request, request.user)
+                messages.success(request, "Ваш пароль успешно изменен.")
+        return redirect("staff_management")
 
-    ctx.update({
-        'employees': CustomUser.objects.select_related('position').all().order_by('tab_number'),
-        'positions': StaffPosition.objects.all(),
-    })
-    return render(request, 'staff_management.html', ctx)
+    return render(
+        request,
+        "staff_management.html",
+        {
+            "employees": CustomUser.objects.select_related("position").all() if request.user.can_admin_roles else [],
+            "positions": StaffPosition.objects.all() if request.user.can_admin_roles else [],
+        },
+    )

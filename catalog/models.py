@@ -4,207 +4,387 @@ from django.contrib.auth.models import AbstractUser
 
 
 class StaffPosition(models.Model):
-    code = models.CharField(max_length=30, unique=True, verbose_name='Код роли')
-    title = models.CharField(max_length=150, verbose_name='Наименование должности')
-    is_management = models.BooleanField(default=False, verbose_name='Руководитель')
-    is_sales_manager = models.BooleanField(default=True, verbose_name='Менеджер по продажам')
+    """Справочник ролей и должностей ООО 'Юстейдж' с гибкой матрицей прав доступа[cite: 2]"""
+    code = models.CharField("Код роли", max_length=30, unique=True)
+    title = models.CharField("Название должности", max_length=120)
+    is_management = models.BooleanField("Руководящая должность (видит планы и статистику)", default=False)
+    is_sales_manager = models.BooleanField("Менеджер по продажам (участвует в статистике KPI)", default=False)
 
-    view_kanban = models.BooleanField(default=True, verbose_name='Просмотр: Канбан')
-    edit_kanban = models.BooleanField(default=True, verbose_name='Редактирование: Канбан')
-    view_estimates = models.BooleanField(default=True, verbose_name='Просмотр: Сметы и ТЗ')
-    edit_estimates = models.BooleanField(default=True, verbose_name='Редактирование: Сметы и ТЗ')
-    view_catalog = models.BooleanField(default=True, verbose_name='Просмотр: Каталог')
-    edit_catalog = models.BooleanField(default=False, verbose_name='Редактирование: Импорт прайсов')
-    view_logistics = models.BooleanField(default=True, verbose_name='Просмотр: Логистика')
-    edit_logistics = models.BooleanField(default=False, verbose_name='Редактирование: Логистика')
-    view_twin = models.BooleanField(default=True, verbose_name='Просмотр: Цифровой паспорт')
-    edit_twin = models.BooleanField(default=False, verbose_name='Редактирование: Цифровой паспорт')
+    # Права на 1. Канбан-доску[cite: 2]
+    can_view_kanban = models.BooleanField("Просмотр Канбан-доски", default=True)
+    can_create_project = models.BooleanField("Создание проектов на Канбане", default=False)
+    can_create_task = models.BooleanField("Создание рабочих задач на Канбане", default=True)
+    can_manage_kanban_columns = models.BooleanField("Настройка разделов (колонок) Канбана", default=False)
 
-    view_currencies = models.BooleanField(default=True, verbose_name='Просмотр: Мультивалютный контур')
-    edit_currencies = models.BooleanField(default=False, verbose_name='Редактирование/Удаление: Мультивалютный контур')
+    # Права на Сметы и ТЗ[cite: 2]
+    can_view_estimates = models.BooleanField("Просмотр смет и ТЗ проектов", default=True)
+    can_edit_estimates = models.BooleanField("Редактирование смет, ТЗ и калькуляторов", default=False)
+    can_approve_engineering = models.BooleanField("Инженерное визирование проектов", default=False)
 
-    view_vendors = models.BooleanField(default=True, verbose_name='Просмотр: Реестр поставщиков')
-    edit_vendors = models.BooleanField(default=False, verbose_name='Редактирование/Удаление: Реестр поставщиков')
+    # Права на 2. Каталог, Прайсы, Валюты и Поставщиков[cite: 2]
+    can_view_catalog = models.BooleanField("Просмотр каталога ustage-group.ru", default=True)
+    can_import_prices = models.BooleanField("Импорт прайс-листов Excel и ред. каталога", default=False)
+    can_view_currencies = models.BooleanField("Просмотр Мультивалютного контура ЦБ РФ", default=True)
+    can_edit_currencies = models.BooleanField("Управление валютами в Мультивалютном контуре", default=False)
+    can_view_vendors = models.BooleanField("Просмотр Реестра поставщиков", default=True)
+    can_edit_vendors = models.BooleanField("Редактирование и удаление поставщиков", default=False)
 
-    view_venue_profiles = models.BooleanField(default=True, verbose_name='Просмотр: Справочник профилей театров')
-    edit_venue_profiles = models.BooleanField(default=False, verbose_name='Редактирование/Удаление: Справочник профилей театров')
+    # Права на 3. Логистику[cite: 2]
+    can_view_logistics = models.BooleanField("Просмотр модуля Логистики (Деловые Линии / СДЭК)", default=True)
+    can_edit_logistics = models.BooleanField("Управление поставками и трек-номерами", default=False)
+
+    # Права на 4. Цифровой паспорт и Профили театров[cite: 2]
+    can_view_digital_twin = models.BooleanField("Просмотр Цифрового паспорта объекта", default=True)
+    can_edit_digital_twin = models.BooleanField("Редактирование оборудования по S/N в Паспорте", default=False)
+    can_view_venue_profiles = models.BooleanField("Просмотр Справочника профилей театров", default=True)
+    can_edit_venue_profiles = models.BooleanField("Редактирование и удаление профилей театров", default=False)
+
+    # Права на 5. Управление штатом и ролями[cite: 2]
+    can_manage_staff = models.BooleanField("Управление штатом сотрудников и ролями", default=False)
+
+    class Meta:
+        verbose_name = "Должность / Роль"
+        verbose_name_plural = "1. Справочник ролей и должностей (Матрица прав)"
+        ordering = ['id']
 
     def __str__(self):
         return self.title
 
 
 class CustomUser(AbstractUser):
+    """Модель сотрудника ООО 'Юстейдж' со связью с должностью и планами KPI[cite: 2]"""
     ROLE_CHOICES = (
         ('ceo', 'Генеральный директор'),
-        ('rop', 'Руководитель отдела продаж'),
-        ('lead_sales', 'Ведущий менеджер по продажам'),
-        ('sales', 'Менеджер отдела продаж'),
+        ('sales_head', 'Руководитель отдела продаж'),
+        ('Wait_lead', 'Ведущий менеджер по продажам'),
+        ('sales_mgr', 'Менеджер отдела продаж'),
         ('tech_head', 'Руководитель технического отдела'),
         ('engineer', 'Инженер сценического оборудования'),
         ('coordinator', 'Координатор проектов'),
         ('warehouse', 'Кладовщик'),
     )
-    role = models.CharField(max_length=30, default='sales', verbose_name='Системный код роли')
+    role = models.CharField("Системный код роли", max_length=25, choices=ROLE_CHOICES, default='sales_mgr')
     position = models.ForeignKey(
-        StaffPosition, on_delete=models.SET_NULL, null=True, blank=True,
-        related_name='employees', verbose_name='Должность по штату'
+        StaffPosition,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='employees',
+        verbose_name="Должность в штатном расписании"
     )
-    tab_number = models.CharField(max_length=15, default='00010', verbose_name='Табельный номер')
+    tab_number = models.CharField("Табельный номер", max_length=20, default="00012")
+    phone = models.CharField("Внутренний телефон", max_length=30, default="+7 (812) 409-49-91")
+    department = models.CharField("Подразделение", max_length=100, default="Коммерческий отдел")
     can_manage_roles = models.BooleanField(
-        default=False,
-        verbose_name='Право управления ролями и штатом'
+        "Делегировано право управления штатом и ролями (от Гендиректора)",
+        default=False
     )
+    password_reset_code = models.CharField("Одноразовый код сброса пароля", max_length=12, blank=True, default="")
 
-    # Пункт 2: Плановые показатели менеджера (задаются руководителем)
+    # Плановые показатели KPI для менеджеров (задаются руководством)[cite: 2]
     monthly_sales_plan_rub = models.DecimalField(
-        max_digits=14, decimal_places=2, default=Decimal('12000000.00'),
-        verbose_name='План продаж по проектам, ₽'
+        "План продаж на месяц, ₽",
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal('5000000.00')
     )
-    projects_plan_count = models.PositiveIntegerField(
-        default=3,
-        verbose_name='План по количеству проектов, шт.'
-    )
-    tasks_plan_count = models.PositiveIntegerField(
-        default=4,
-        verbose_name='План по закрытым задачам, шт.'
-    )
+    projects_plan_count = models.PositiveIntegerField("План по проектам (шт.)", default=3)
+    tasks_plan_count = models.PositiveIntegerField("План по закрытым задачам (шт.)", default=5)
 
-    @property
-    def position_title(self) -> str:
+    class Meta:
+        verbose_name = "Сотрудник"
+        verbose_name_plural = "2. Штат сотрудников ООО «Юстейдж»"
+
+    def get_role_title(self) -> str:
         if self.position:
             return self.position.title
         return dict(self.ROLE_CHOICES).get(self.role, self.role)
 
     @property
     def is_ceo(self) -> bool:
-        return self.role == 'ceo' or (self.position and self.position.code == 'ceo') or self.is_superuser
+        if self.position and self.position.code == 'ceo':
+            return True
+        return self.role == 'ceo' or self.is_superuser
 
     @property
     def is_boss_role(self) -> bool:
         if self.position:
             return self.position.is_management or self.is_ceo
-        return self.role in ('ceo', 'rop', 'tech_head') or self.is_superuser
+        return self.role in ('ceo', 'sales_head', 'tech_head') or self.is_superuser
+
+    @property
+    def is_boss(self) -> bool:
+        """Алиас для совместимости с вызовами в представлениях и шаблонах[cite: 1]"""
+        return self.is_boss_role
 
     @property
     def can_admin_staff_and_roles(self) -> bool:
-        return self.is_ceo or self.can_manage_roles or self.role == 'rop'
+        if self.is_ceo or self.can_manage_roles:
+            return True
+        if self.position and self.position.can_manage_staff:
+            return True
+        return False
 
     @property
-    def can_create_projects(self) -> bool:
-        pos_code = self.position.code if self.position else self.role
-        return pos_code not in ('engineer', 'warehouse')
+    def can_admin_roles(self) -> bool:
+        """Алиас для проверки прав администрирования ролей и штата[cite: 1]"""
+        return self.can_admin_staff_and_roles
+
+    def can_perm(self, perm_code: str) -> bool:
+        """
+        Универсальная проверка гранулярного права доступа по коду[cite: 1].
+        Поддерживает вызовы как с префиксом 'can_', так и без него (например, 'edit_estimates').
+        """
+        if self.is_superuser or self.is_ceo:
+            return True
+
+        attr_name = perm_code if perm_code.startswith('can_') else f'can_{perm_code}'
+
+        # Если у пользователя сам класс имеет такое свойство (например, can_create_project_card)
+        if hasattr(self, attr_name) and attr_name != 'can_perm':
+            val = getattr(self, attr_name)
+            return val() if callable(val) else bool(val)
+
+        if self.position and hasattr(self.position, attr_name):
+            return bool(getattr(self.position, attr_name))
+
+        # Резервные правила по умолчанию, если должность не привязана
+        fallback_map = {
+            'can_view_kanban': True,
+            'can_create_project': self.role in ('ceo', 'sales_head', 'Wait_lead', 'sales_mgr', 'tech_head', 'coordinator'),
+            'can_create_task': True,
+            'can_manage_kanban_columns': self.is_boss_role,
+            'can_view_estimates': True,
+            'can_edit_estimates': self.role in ('ceo', 'sales_head', 'Wait_lead', 'sales_mgr', 'tech_head', 'engineer', 'coordinator'),
+            'can_approve_engineering': self.role in ('ceo', 'tech_head', 'engineer'),
+            'can_view_catalog': True,
+            'can_import_prices': self.role in ('ceo', 'sales_head', 'coordinator'),
+            'can_view_currencies': self.role != 'warehouse',
+            'can_edit_currencies': self.role in ('ceo', 'sales_head', 'coordinator'),
+            'can_view_vendors': True,
+            'can_edit_vendors': self.role in ('ceo', 'sales_head', 'coordinator'),
+            'can_view_logistics': True,
+            'can_edit_logistics': self.role in ('ceo', 'sales_head', 'Wait_lead', 'coordinator', 'warehouse'),
+            'can_view_digital_twin': True,
+            'can_edit_digital_twin': self.role in ('ceo', 'tech_head', 'engineer', 'warehouse'),
+            'can_view_venue_profiles': self.role != 'warehouse',
+            'can_edit_venue_profiles': self.role in ('ceo', 'tech_head', 'engineer'),
+            'can_manage_staff': self.can_admin_staff_and_roles,
+        }
+        return fallback_map.get(attr_name, False)
+
+    # Удобные проверки разрешений для шаблонов и контроллеров[cite: 1]
+    @property
+    def can_create_project_card(self) -> bool:
+        return self.can_perm('create_project')
 
     @property
-    def can_view_currencies_block(self) -> bool:
-        return self.is_ceo or not self.position or self.position.view_currencies
+    def can_edit_kanban_cols(self) -> bool:
+        return self.can_perm('manage_kanban_columns')
 
     @property
-    def can_edit_currencies_block(self) -> bool:
-        return self.is_ceo or (self.position and self.position.edit_currencies)
+    def can_edit_project_estimate(self) -> bool:
+        return self.can_perm('edit_estimates')
 
     @property
-    def can_view_vendors_registry(self) -> bool:
-        return self.is_ceo or not self.position or self.position.view_vendors
+    def can_import_catalog_excel(self) -> bool:
+        return self.can_perm('import_prices')
 
     @property
-    def can_edit_vendors_registry(self) -> bool:
-        return self.is_ceo or (self.position and self.position.edit_vendors)
+    def can_view_currency_block(self) -> bool:
+        return self.can_perm('view_currencies')
 
     @property
-    def can_view_venue_profiles_block(self) -> bool:
-        return self.is_ceo or not self.position or self.position.view_venue_profiles
+    def can_edit_currency_block(self) -> bool:
+        return self.can_perm('edit_currencies')
 
     @property
-    def can_edit_venue_profiles_block(self) -> bool:
-        return self.is_ceo or (self.position and self.position.edit_venue_profiles)
+    def can_view_vendor_block(self) -> bool:
+        return self.can_perm('view_vendors')
 
     @property
-    def can_import_prices(self) -> bool:
-        return self.is_ceo or (self.position and self.position.edit_catalog)
+    def can_edit_vendor_block(self) -> bool:
+        return self.can_perm('edit_vendors')
 
     @property
-    def is_sales_mgr(self) -> bool:
-        if self.position:
-            return self.position.is_sales_manager and not self.position.is_management
-        return self.role in ('lead_sales', 'sales')
+    def can_edit_logistics_block(self) -> bool:
+        return self.can_perm('edit_logistics')
+
+    @property
+    def can_edit_digital_twin_block(self) -> bool:
+        return self.can_perm('edit_digital_twin')
+
+    @property
+    def can_view_profiles_block(self) -> bool:
+        return self.can_perm('view_venue_profiles')
+
+    @property
+    def can_edit_profiles_block(self) -> bool:
+        return self.can_perm('edit_venue_profiles')
 
     def __str__(self):
-        return f"{self.first_name or self.username} ({self.position_title})"
+        full_name = f"{self.first_name} {self.last_name}".strip() or self.username
+        return f"{full_name} ({self.get_role_title()})"
 
 
 class CurrencyRate(models.Model):
-    code = models.CharField(max_length=5, unique=True, verbose_name='Код валюты ЦБ РФ')
-    name = models.CharField(max_length=80, default='Валюта', verbose_name='Наименование валюты')
-    nominal = models.PositiveIntegerField(default=1, verbose_name='Номинал ЦБ')
-    rate = models.DecimalField(max_digits=10, decimal_places=4, verbose_name='Курс ЦБ РФ к рублю')
-    is_active = models.BooleanField(default=True, verbose_name='Выгружена на экран')
-    updated_at = models.DateTimeField(auto_now=True)
+    """Хранилище мировых валют ЦБ РФ (выводятся в активную таблицу по флагу is_active)[cite: 2]"""
+    code = models.CharField("Код валюты (ISO)", max_length=10, unique=True)
+    name = models.CharField("Наименование валюты", max_length=60)
+    nominal = models.PositiveIntegerField("Номинал", default=1)
+    rate = models.DecimalField("Официальный курс ЦБ РФ к RUB", max_digits=12, decimal_places=4)
+    is_active = models.BooleanField("Выводить в рабочую таблицу валют", default=True)
+    updated_at = models.DateTimeField("Дата синхронизации с ЦБ РФ", auto_now=True)
 
     class Meta:
+        verbose_name = "Курс валюты ЦБ РФ"
+        verbose_name_plural = "3. Справочник валют ЦБ РФ"
         ordering = ['code']
 
     def __str__(self):
-        return f"{self.code} — {self.name} ({self.rate} ₽)"
+        return f"{self.code} — {self.rate} ₽"
 
 
 class Vendor(models.Model):
-    name = models.CharField(max_length=150, verbose_name='Поставщик / Дистрибьютор')
-    country = models.CharField(max_length=80, default='Китай', verbose_name='Страна')
-    contact_info = models.CharField(max_length=150, default='sale@ustage-group.ru', verbose_name='Контакты')
-    currency = models.ForeignKey(CurrencyRate, on_delete=models.PROTECT, verbose_name='Валюта прайса')
-    base_discount = models.DecimalField(max_digits=5, decimal_places=2, default=15.00, verbose_name='Базовая скидка (%)')
-    protected_discount = models.DecimalField(max_digits=5, decimal_places=2, default=32.00, verbose_name='Скидка Защиты проекта (%)')
+    """Поставщики и заводы-производители сценического комплекса[cite: 2]"""
+    name = models.CharField("Поставщик / Производитель", max_length=120)
+    country = models.CharField("Страна логистики", max_length=60)
+    currency = models.ForeignKey(CurrencyRate, on_delete=models.PROTECT, verbose_name="Валюта прайса")
+    base_discount = models.DecimalField("Базовая дилерская скидка (%)", max_digits=5, decimal_places=2, default=15.00)
+    protected_discount = models.DecimalField(
+        "Скидка при Защите Проекта (%)",
+        max_digits=5,
+        decimal_places=2,
+        default=30.00
+    )
+    contact_info = models.CharField("Контакты дистрибьютора / API", max_length=200, blank=True)
+
+    class Meta:
+        verbose_name = "Поставщик (Вендор)"
+        verbose_name_plural = "4. Реестр поставщиков"
+        ordering = ['id']
 
     def __str__(self):
         return f"{self.name} ({self.country}, {self.currency.code})"
 
 
 class Category(models.Model):
-    code = models.CharField(max_length=30, unique=True, verbose_name='Код раздела')
-    name = models.CharField(max_length=150, verbose_name='Раздел каталога ustage-group.ru')
-    default_target_margin_pct = models.DecimalField(max_digits=5, decimal_places=2, default=25.00, verbose_name='Целевая наценка (%)')
+    """Разделы верхнего уровня строго по каталогу https://ustage-group.ru/catalog/[cite: 2]"""
+    code = models.CharField("Системный код раздела", max_length=40, unique=True)
+    name = models.CharField("Раздел каталога (ustage-group.ru)", max_length=150)
+    default_target_margin_pct = models.DecimalField(
+        "Целевая маржинальность направления (%)",
+        max_digits=5,
+        decimal_places=2,
+        default=25.00
+    )
+
+    class Meta:
+        verbose_name = "Раздел каталога (Уровень 1)"
+        verbose_name_plural = "5. Разделы каталога ustage-group.ru"
+        ordering = ['id']
 
     def __str__(self):
         return self.name
 
 
 class SubCategory(models.Model):
-    category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name='subcategories', verbose_name='Раздел')
-    code = models.CharField(max_length=40, unique=True, verbose_name='Код подраздела')
-    name = models.CharField(max_length=150, verbose_name='Подраздел ustage-group.ru')
-    calc_norm_per_100_seats = models.PositiveIntegerField(default=2, verbose_name='Норматив калькулятора')
+    """Подразделы второго уровня (строго привязанные к разделу Category)[cite: 2]"""
+    category = models.ForeignKey(
+        Category,
+        on_delete=models.CASCADE,
+        related_name='subcategories',
+        verbose_name="Родительский раздел"
+    )
+    code = models.CharField("Код подраздела", max_length=50, unique=True)
+    name = models.CharField("Подраздел оборудования", max_length=160)
+    calc_norm_per_100_seats = models.DecimalField(
+        "Норматив подбора на 100 мест зала (ед.)",
+        max_digits=6,
+        decimal_places=2,
+        default=2.00
+    )
+
+    class Meta:
+        verbose_name = "Подраздел каталога (Уровень 2)"
+        verbose_name_plural = "6. Подразделы каталога ustage-group.ru"
+        ordering = ['category__id', 'id']
 
     def __str__(self):
         return f"{self.category.name} → {self.name}"
 
 
 class Item(models.Model):
+    """Номенклатурная позиция каталога с закупочной, розничной ценой и контролем наличия[cite: 2]"""
     STOCK_CHOICES = (
-        ('in_stock', 'В наличии у поставщика'),
-        ('low_stock', 'Мало'),
-        ('out_of_stock', 'Нет в наличии'),
+        ('in_stock', 'В наличии на складе поставщика'),
+        ('low_stock', 'Мало (требуется бронь)'),
+        ('out_of_stock', 'Нет в наличии у поставщика'),
     )
-    sku = models.CharField(max_length=60, unique=True, verbose_name='Артикул')
-    brand = models.CharField(max_length=100, verbose_name='Бренд')
-    name = models.CharField(max_length=255, verbose_name='Наименование с сайта ustage-group.ru')
-    category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name='items', verbose_name='Раздел')
-    subcategory = models.ForeignKey(SubCategory, on_delete=models.SET_NULL, null=True, blank=True, related_name='items', verbose_name='Подраздел')
-    vendor = models.ForeignKey(Vendor, on_delete=models.CASCADE, related_name='items', verbose_name='Поставщик')
 
-    retail_price = models.DecimalField(max_digits=12, decimal_places=2, default=1000.00, verbose_name='Розничная цена')
-    discount_pct = models.DecimalField(max_digits=5, decimal_places=2, default=15.00, verbose_name='Скидка (%)')
-    purchase_price = models.DecimalField(max_digits=12, decimal_places=2, default=850.00, verbose_name='Закупочная цена')
+    sku = models.CharField("Артикул (SKU)", max_length=60, unique=True)
+    brand = models.CharField("Бренд (для коммерческой сметы)", max_length=80, default="Ustage Pro")
+    name = models.CharField("Наименование оборудования", max_length=255)
+    category = models.ForeignKey(Category, on_delete=models.CASCADE, verbose_name="Раздел каталога")
+    subcategory = models.ForeignKey(
+        SubCategory,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        verbose_name="Подраздел каталога"
+    )
+    vendor = models.ForeignKey(Vendor, on_delete=models.CASCADE, verbose_name="Поставщик")
 
-    stock_status = models.CharField(max_length=20, choices=STOCK_CHOICES, default='in_stock', verbose_name='Наличие')
-    stock_qty = models.PositiveIntegerField(default=15, verbose_name='Остаток у поставщика')
+    retail_price = models.DecimalField("Розничная цена прайса (РРЦ в вал.)", max_digits=12, decimal_places=2)
+    discount_pct = models.DecimalField("Базовая скидка по прайсу (%)", max_digits=5, decimal_places=2, default=15.00)
+    purchase_price = models.DecimalField(
+        "Закупочная цена со скидкой (в вал.)",
+        max_digits=12,
+        decimal_places=2,
+        default=0.00
+    )
 
-    recommended_analog = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, verbose_name='Аналог')
-    specs_text = models.CharField(max_length=350, default='Мощность 400 Вт, вес 12 кг', verbose_name='Характеристики')
-    technical_specs = models.JSONField(default=dict, blank=True, verbose_name='ТТХ JSON')
+    stock_status = models.CharField(
+        "Наличие у поставщика",
+        max_length=20,
+        choices=STOCK_CHOICES,
+        default='in_stock'
+    )
+    stock_qty = models.PositiveIntegerField("Доступный остаток у вендора, шт.", default=20)
+    recommended_analog = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        verbose_name="Рекомендуемый аналог (для замены и 44-ФЗ)"
+    )
+
+    specs_text = models.TextField("Характеристики (текстом из прайса)", blank=True)
+    technical_specs = models.JSONField("Структурированные параметры (вес, мощность, ТТХ)", default=dict)
+    is_russian_registry = models.BooleanField("Реестр Минпромторга РФ (ПП № 1875)", default=False)
+    default_resource_hours = models.PositiveIntegerField(
+        "Паспортный ресурс лампы / механизма (моточасы)",
+        default=2000
+    )
+
+    class Meta:
+        verbose_name = "Позиция оборудования"
+        verbose_name_plural = "7. Номенклатура каталога"
+        ordering = ['category__id', 'sku']
+
+    def save(self, *args, **kwargs):
+        if self.retail_price and (not self.purchase_price or self.purchase_price <= Decimal('0')):
+            disc = Decimal(str(self.discount_pct or 0)) / Decimal('100')
+            self.purchase_price = (Decimal(str(self.retail_price)) * (Decimal('1') - disc)).quantize(Decimal('0.01'))
+        super().save(*args, **kwargs)
 
     @property
-    def base_price(self) -> Decimal:
-        return self.retail_price
+    def weight_kg(self) -> Decimal:
+        return Decimal(str(self.technical_specs.get('weight_kg', 5.0)))
+
+    @property
+    def power_w(self) -> Decimal:
+        return Decimal(str(self.technical_specs.get('power_w', 150.0)))
 
     def __str__(self):
         return f"[{self.sku}] {self.brand} {self.name}"
